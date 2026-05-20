@@ -1,6 +1,6 @@
 # SPA CI Helper
 
-一个基于当前浏览器 GitLab 登录态的 Chrome 插件，用来批量打开 GitLab 页面、合并 MR，并在合并后触发 `release-minor` / `release-patch` 手动发布 job。
+一个基于当前浏览器 GitLab 登录态的 Chrome 插件，用来批量打开 GitLab 页面、合并 MR 并触发集成发布 job，也可以根据项目 tag 触发 `upload-prod` 上传生产。
 
 ## 使用方式
 
@@ -9,22 +9,28 @@
 3. 点击「加载已解压的扩展程序」
 4. 选择本目录：`/home/lirenkang/projects/spa/spa-ci-helper`
 5. 确认浏览器已经登录 `https://git.papamk.com`
-6. 打开插件，粘贴项目协作群里的 MR 链接文本
-7. 点击「解析」
-8. 选择一个要触发的发布 job：`release-minor` 或 `release-patch`
-9. 调试时保持「可视化执行」和「每步暂停 2 秒」开启，可以看到插件打开和切换页面
-10. 点击「开始执行」
+6. 打开插件，选择执行模式
+7. 合并 MR 模式：粘贴项目协作群里的 MR 链接文本
+8. 上传生产模式：每行粘贴一个项目地址和 tag，例如 `https://git.papamk.com/lirenkang/test-ci-chrome v1.0.6`
+9. 点击「解析」
+10. 合并 MR 模式下，选择一个要触发的发布 job：`release-minor` 或 `release-patch`
+11. 调试时保持「可视化执行」和「每步暂停 2 秒」开启，可以看到插件打开和切换页面
+12. 点击「开始执行」
 
 ## 当前策略
 
-- popup 解析 MR 链接。
-- background 串行打开 MR 页面。
+- popup 解析 MR 链接，或解析 `项目地址 tag`。
+- background 串行打开 GitLab 页面。
 - background 通过 `chrome.scripting.executeScript` 在当前 GitLab 页面直接执行 DOM 操作。
-- 合并后通过当前登录态 API 只做查询：
+- 合并 MR 流程通过当前登录态 API 只做查询：
   - 合并前预检 MR，已合并、冲突、非 opened 状态会跳过
   - 读取 MR 的 `merge_commit_sha`
   - 用 `merge_commit_sha` 查 master pipeline
   - 读取 pipeline jobs，拿到目标 job 页面链接
+- 上传生产流程通过当前登录态 API 只做查询：
+  - 读取 tag 信息和 commit sha
+  - 用 tag ref 查 pipeline，优先匹配 tag commit sha
+  - 读取 pipeline jobs，拿到 `upload-prod` 页面链接
 - 进入 job 页面后通过 DOM 点击页面上的执行按钮。
 
 有副作用的动作走 DOM 点击；API 只用于查询和精确定位。

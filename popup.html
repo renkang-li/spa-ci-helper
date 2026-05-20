@@ -15,7 +15,7 @@
       <div id="buildInfo" class="build-info">backend: checking</div>
 
       <section class="section">
-        <label class="label" for="sourceText">粘贴 MR 聊天记录</label>
+        <label class="label" for="sourceText" id="sourceLabel">粘贴 MR 聊天记录</label>
         <textarea id="sourceText" spellcheck="false" placeholder="https://git.papamk.com/lf/minishops/.../-/merge_requests/26"></textarea>
         <div class="actions">
           <button id="parseBtn" type="button">解析</button>
@@ -24,6 +24,17 @@
 
       <section class="section grid">
         <label class="check">
+          <input id="modeMerge" type="radio" name="runMode" value="merge" checked />
+          <span>合并 MR</span>
+        </label>
+        <label class="check">
+          <input id="modeProd" type="radio" name="runMode" value="prod" />
+          <span>tag 上传生产</span>
+        </label>
+      </section>
+
+      <section id="releaseOptions" class="section grid">
+        <label class="check">
           <input id="releaseMinor" type="radio" name="releaseJob" value="release-minor" checked />
           <span>release-minor</span>
         </label>
@@ -31,6 +42,9 @@
           <input id="releasePatch" type="radio" name="releaseJob" value="release-patch" />
           <span>release-patch</span>
         </label>
+      </section>
+
+      <section class="section grid">
         <label class="check">
           <input id="visibleExecution" type="checkbox" checked />
           <span>可视化执行</span>

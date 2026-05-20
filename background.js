@@ -1,5 +1,5 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
-const BUILD_ID = "precheck-api-job-dom-play";
+const BUILD_ID = "prod-upload-dom-play";
 const POLL_INTERVAL_MS = 3000;
 const MERGE_TIMEOUT_MS = 120000;
 const PIPELINE_TIMEOUT_MS = 180000;
@@ -10,6 +10,7 @@ let state = {
   logs: [],
   tasks: [],
   options: {
+    mode: "merge",
     jobs: ["release-minor", "release-patch"],
     visibleExecution: true,
     slowMode: true
@@ -54,15 +55,22 @@ function start(message) {
     running: true,
     stopRequested: false,
     logs: [],
-    tasks: (message.tasks || []).map((task) => ({ ...task, status: "pending", message: "等待执行" })),
+    tasks: (message.tasks || []).map((task) => ({
+      ...task,
+      mode: task.mode || message.options?.mode || "merge",
+      status: "pending",
+      message: "等待执行"
+    })),
     options: {
+      mode: message.options?.mode || "merge",
       jobs: message.options?.jobs?.length ? message.options.jobs : ["release-minor", "release-patch"],
       visibleExecution: message.options?.visibleExecution !== false,
       slowMode: message.options?.slowMode === true
     }
   };
 
-  log(`SPA CI Helper v${chrome.runtime.getManifest().version} ${BUILD_ID} 收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}`);
+  const jobLabel = state.options.mode === "prod" ? "upload-prod" : state.options.jobs.join(", ");
+  log(`SPA CI Helper v${chrome.runtime.getManifest().version} ${BUILD_ID} 收到开始请求，共 ${state.tasks.length} 个任务，模式：${state.options.mode}，jobs: ${jobLabel}`);
   processQueue();
   return snapshot();
 }
@@ -81,7 +89,7 @@ async function processQueue() {
     try {
       await processTask(task);
     } catch (error) {
-      log(`失败：${task.projectPath}!${task.mrIid} - ${error.message}`);
+      log(`失败：${taskName(task)} - ${error.message}`);
       updateTask(task.id, { status: "failed", message: error.message });
     }
   }
@@ -93,6 +101,15 @@ async function processQueue() {
 }
 
 async function processTask(task) {
+  if (task.mode === "prod") {
+    await processProdTask(task);
+    return;
+  }
+
+  await processMergeTask(task);
+}
+
+async function processMergeTask(task) {
   updateTask(task.id, { status: "opening_mr", message: "打开 MR 页面" });
   const tab = await chrome.tabs.create({ url: task.url, active: state.options.visibleExecution });
   await focusWindowIfVisible(tab.windowId);
@@ -142,8 +159,49 @@ async function processTask(task) {
   log(`发布 job 结果：${formatJobResult(jobResults)}`);
 }
 
+async function processProdTask(task) {
+  updateTask(task.id, { status: "opening_tag", message: "打开 tag 页面" });
+  const tab = await chrome.tabs.create({ url: task.url, active: state.options.visibleExecution });
+  await focusWindowIfVisible(tab.windowId);
+  setTaskTab(task.id, tab);
+  log(`已创建标签页 #${tab.id}`);
+
+  setTaskTab(task.id, await waitForTabComplete(tab.id));
+  await visualPause(`tag 页面已打开：${task.projectPath}@${task.tagName}`);
+
+  updateTask(task.id, { status: "reading_tag", message: "API 查询 tag 信息" });
+  const tag = await getTag(tab.id, task.projectPath, task.tagName);
+  const commitSha = tag?.commit?.id || "";
+  log(`拿到 tag commit：${task.tagName} ${shortSha(commitSha)}`);
+
+  updateTask(task.id, {
+    tagCommitSha: commitSha,
+    status: "finding_pipeline",
+    message: `API 查询 tag pipeline：${task.tagName}`
+  });
+
+  const pipeline = await waitForTagPipeline(tab.id, task.projectPath, task.tagName, commitSha);
+  log(`找到 tag pipeline #${pipeline.id}`);
+
+  updateTask(task.id, {
+    pipelineId: pipeline.id,
+    status: "triggering_jobs",
+    message: "API 定位 upload-prod，DOM 点击执行"
+  });
+
+  const jobs = await findPipelineJobs(tab.id, task.projectPath, pipeline.id, [task.jobName || "upload-prod"]);
+  const jobResults = await triggerReleaseJobs(tab.id, jobs);
+  const hasFailure = jobResults.some((job) => ["failed", "missing"].includes(job.status));
+  updateTask(task.id, { status: hasFailure ? "failed" : "done", message: formatJobResult(jobResults) });
+  log(`生产上传 job 结果：${formatJobResult(jobResults)}`);
+}
+
 async function getMergeRequest(tabId, task) {
   return gitlabGet(tabId, `/api/v4/projects/${encodeURIComponent(task.projectPath)}/merge_requests/${task.mrIid}`);
+}
+
+async function getTag(tabId, projectPath, tagName) {
+  return gitlabGet(tabId, `/api/v4/projects/${encodeURIComponent(projectPath)}/repository/tags/${encodeURIComponent(tagName)}`);
 }
 
 function getMergeSkipReason(mr) {
@@ -179,6 +237,21 @@ async function waitForPipeline(tabId, projectPath, sha) {
   }
 
   throw new Error(`超时未找到 sha=${shortSha(sha)} 的 master pipeline`);
+}
+
+async function waitForTagPipeline(tabId, projectPath, tagName, commitSha) {
+  const startedAt = Date.now();
+  const query = new URLSearchParams({ ref: tagName });
+
+  while (Date.now() - startedAt < PIPELINE_TIMEOUT_MS) {
+    const pipelines = await gitlabGet(tabId, `/api/v4/projects/${encodeURIComponent(projectPath)}/pipelines?${query}`);
+    if (Array.isArray(pipelines) && pipelines.length > 0) {
+      return pipelines.find((pipeline) => commitSha && pipeline.sha === commitSha) || pipelines[0];
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`超时未找到 tag=${tagName} 的 pipeline`);
 }
 
 async function gitlabGet(tabId, path) {
@@ -474,6 +547,10 @@ async function visualPause(message) {
 
 function formatJobResult(results) {
   return results.map((item) => `${item.name}: ${item.status}${item.message ? `(${item.message})` : ""}`).join("；");
+}
+
+function taskName(task) {
+  return task.mode === "prod" ? `${task.projectPath}@${task.tagName}` : `${task.projectPath}!${task.mrIid}`;
 }
 
 function shortSha(sha) {

@@ -2,11 +2,15 @@ const GITLAB_ORIGIN = "https://git.papamk.com";
 
 const els = {
   sourceText: document.querySelector("#sourceText"),
+  sourceLabel: document.querySelector("#sourceLabel"),
   parseBtn: document.querySelector("#parseBtn"),
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   clearBtn: document.querySelector("#clearBtn"),
   reloadBtn: document.querySelector("#reloadBtn"),
+  modeMerge: document.querySelector("#modeMerge"),
+  modeProd: document.querySelector("#modeProd"),
+  releaseOptions: document.querySelector("#releaseOptions"),
   releaseMinor: document.querySelector("#releaseMinor"),
   releasePatch: document.querySelector("#releasePatch"),
   visibleExecution: document.querySelector("#visibleExecution"),
@@ -62,8 +66,67 @@ function parseMergeRequests(text) {
   return result;
 }
 
+function parseProdUploads(text) {
+  const seen = new Set();
+  const result = [];
+
+  for (const rawLine of text.split(/\n+/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const urlMatch = line.match(/https:\/\/git\.papamk\.com\/([^\s)]+)/);
+    const tagMatch = line.match(/\b(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
+    if (!urlMatch || !tagMatch) continue;
+
+    addProdTask(result, seen, urlMatch[1], tagMatch[1]);
+  }
+
+  if (!result.length) {
+    const urls = [...text.matchAll(/https:\/\/git\.papamk\.com\/([^\s)]+)/g)];
+    const tags = [...text.matchAll(/\b(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/g)];
+    if (urls.length === 1 && tags.length === 1) addProdTask(result, seen, urls[0][1], tags[0][1]);
+  }
+
+  return result;
+}
+
+function addProdTask(result, seen, rawProjectPath, tagName) {
+  const projectPath = normalizeProjectPath(rawProjectPath);
+  const key = `${projectPath}@${tagName}`;
+  if (!projectPath || seen.has(key)) return;
+  seen.add(key);
+
+  result.push({
+    id: key,
+    mode: "prod",
+    url: `${GITLAB_ORIGIN}/${projectPath}/-/tags/${encodeURIComponent(tagName)}`,
+    projectPath,
+    tagName,
+    jobName: "upload-prod",
+    status: "pending",
+    message: "等待执行"
+  });
+}
+
+function normalizeProjectPath(value) {
+  return decodeURIComponent(value)
+    .split(/[?#]/)[0]
+    .split("/-/")[0]
+    .replace(/[),，。]+$/g, "")
+    .replace(/\/+$/g, "")
+    .replace(/\.git$/g, "");
+}
+
+function currentMode() {
+  return els.modeProd.checked ? "prod" : "merge";
+}
+
 function selectedJobs() {
   return [els.releasePatch.checked ? "release-patch" : "release-minor"];
+}
+
+function taskTitle(task) {
+  return task.mode === "prod" ? `${task.projectPath}@${task.tagName}` : `${task.projectPath}!${task.mrIid}`;
 }
 
 function statusClass(status) {
@@ -81,12 +144,13 @@ function render(state = {}) {
   const failedCount = allTasks.filter((task) => task.status === "failed").length;
   const pendingCount = allTasks.filter((task) => task.status === "pending").length;
   const skippedCount = allTasks.filter((task) => task.status === "skipped").length;
+  const taskKind = allTasks.some((task) => task.mode === "prod") ? "个生产上传任务" : "个 MR";
 
   els.runState.textContent = running ? "running" : "idle";
   els.startBtn.disabled = allTasks.length === 0 || running;
   els.stopBtn.disabled = !running;
   els.summary.textContent = allTasks.length
-    ? `共 ${allTasks.length} 个 MR，完成 ${doneCount}，失败 ${failedCount}，跳过 ${skippedCount}，待执行 ${pendingCount}`
+    ? `共 ${allTasks.length} ${taskKind}，完成 ${doneCount}，失败 ${failedCount}，跳过 ${skippedCount}，待执行 ${pendingCount}`
     : "尚未解析任务";
 
   els.taskList.innerHTML = "";
@@ -101,7 +165,7 @@ function render(state = {}) {
     project.className = "project";
     project.href = task.url;
     project.target = "_blank";
-    project.textContent = `${task.projectPath}!${task.mrIid}`;
+    project.textContent = taskTitle(task);
 
     const badge = document.createElement("span");
     badge.className = `badge ${statusClass(task.status)}`;
@@ -162,15 +226,28 @@ async function refreshState() {
   render({ tasks, logs, running: state?.running === true });
 }
 
-els.parseBtn.addEventListener("click", async () => {
-  tasks = parseMergeRequests(els.sourceText.value);
-  await chrome.storage.local.set({ draftText: els.sourceText.value });
+function updateModeView() {
+  const prodMode = currentMode() === "prod";
+  els.sourceLabel.textContent = prodMode ? "粘贴项目地址和 tag" : "粘贴 MR 聊天记录";
+  els.sourceText.placeholder = prodMode
+    ? "https://git.papamk.com/lirenkang/test-ci-chrome v1.0.6"
+    : "https://git.papamk.com/lf/minishops/.../-/merge_requests/26";
+  els.releaseOptions.hidden = prodMode;
+}
+
+async function parseInput() {
+  tasks = currentMode() === "prod"
+    ? parseProdUploads(els.sourceText.value)
+    : parseMergeRequests(els.sourceText.value);
+  await chrome.storage.local.set({ draftText: els.sourceText.value, runMode: currentMode() });
   render({ tasks, running: false });
-});
+}
+
+els.parseBtn.addEventListener("click", parseInput);
 
 els.startBtn.addEventListener("click", async () => {
   const jobs = selectedJobs();
-  if (!jobs.length) {
+  if (currentMode() === "merge" && !jobs.length) {
     els.summary.textContent = "至少选择一个 release job";
     return;
   }
@@ -182,6 +259,7 @@ els.startBtn.addEventListener("click", async () => {
     type: "start",
     tasks,
     options: {
+      mode: currentMode(),
       jobs,
       visibleExecution: els.visibleExecution.checked,
       slowMode: els.slowMode.checked
@@ -235,10 +313,21 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-chrome.storage.local.get(["draftText"], async ({ draftText }) => {
+for (const input of [els.modeMerge, els.modeProd]) {
+  input.addEventListener("change", async () => {
+    updateModeView();
+    tasks = [];
+    await chrome.storage.local.set({ runMode: currentMode() });
+    render({ tasks, logs, running: false });
+  });
+}
+
+chrome.storage.local.get(["draftText", "runMode"], async ({ draftText, runMode }) => {
+  if (runMode === "prod") els.modeProd.checked = true;
+  updateModeView();
   if (draftText) {
     els.sourceText.value = draftText;
-    tasks = parseMergeRequests(draftText);
+    tasks = currentMode() === "prod" ? parseProdUploads(draftText) : parseMergeRequests(draftText);
   }
   await refreshState();
   await refreshBuildInfo();
