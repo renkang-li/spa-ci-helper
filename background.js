@@ -1,7 +1,4 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
-const POLL_INTERVAL_MS = 3000;
-const MERGE_TIMEOUT_MS = 120000;
-const PIPELINE_TIMEOUT_MS = 180000;
 
 let state = {
   running: false,
@@ -107,24 +104,35 @@ async function processTask(task) {
       throw new Error(mergeResult?.error || "合并点击失败");
     }
 
-    log(`MR 合并动作完成，读取 merge_commit_sha：${task.projectPath}!${task.mrIid}`);
-    updateTask(task.id, { status: "reading_mr", message: "读取 merge_commit_sha" });
-    const mr = await waitForMergeCommit(tab.id, task);
+    const sourceBranch = mergeResult.sourceBranch || "";
+    const pipelineUrl = `${GITLAB_ORIGIN}/${task.projectPath}/-/pipelines?page=1&scope=all&ref=master`;
+
+    log(`MR 合并动作完成，打开 master pipelines：${task.projectPath}!${task.mrIid}`);
     updateTask(task.id, {
-      mergeCommitSha: mr.merge_commit_sha,
+      sourceBranch,
       status: "finding_pipeline",
-      message: `查找 master pipeline: ${shortSha(mr.merge_commit_sha)}`
+      message: sourceBranch ? `DOM 查找 merge pipeline：${sourceBranch}` : "DOM 查找最新 merge pipeline"
     });
 
-    const pipeline = await waitForPipeline(tab.id, task.projectPath, mr.merge_commit_sha);
-    log(`找到 pipeline #${pipeline.id}：${task.projectPath}!${task.mrIid}`);
+    await navigateTab(tab.id, pipelineUrl);
+
+    const releaseJobs = await sendToTab(tab.id, {
+      type: "findReleaseJobsInPipeline",
+      jobs: state.options.jobs,
+      sourceBranch
+    });
+
+    if (!releaseJobs?.ok) {
+      throw new Error(releaseJobs?.error || "未找到 release job");
+    }
+
+    log(`找到 release job：${formatJobResult(releaseJobs.jobs)}`);
     updateTask(task.id, {
-      pipelineId: pipeline.id,
       status: "triggering_jobs",
-      message: `找到 pipeline #${pipeline.id}，准备触发发布 job`
+      message: "进入 job 页面执行手动发布"
     });
 
-    const jobResult = await triggerJobs(tab.id, task.projectPath, pipeline.id, state.options.jobs);
+    const jobResult = await playJobsByDom(tab.id, releaseJobs.jobs);
     log(`发布 job 结果：${formatJobResult(jobResult)}`);
     updateTask(task.id, {
       status: "done",
@@ -144,82 +152,37 @@ async function processTask(task) {
   }
 }
 
-async function waitForMergeCommit(tabId, task) {
-  const start = Date.now();
-
-  while (Date.now() - start < MERGE_TIMEOUT_MS) {
-    const response = await gitlabApi(tabId, "GET", `/api/v4/projects/${encodeProject(task.projectPath)}/merge_requests/${task.mrIid}`);
-    if (response?.state === "merged" && response.merge_commit_sha) {
-      return response;
-    }
-    await delay(POLL_INTERVAL_MS);
-  }
-
-  throw new Error("合并后超时未拿到 merge_commit_sha");
-}
-
-async function waitForPipeline(tabId, projectPath, mergeCommitSha) {
-  const start = Date.now();
-  const query = new URLSearchParams({
-    ref: "master",
-    sha: mergeCommitSha
-  });
-
-  while (Date.now() - start < PIPELINE_TIMEOUT_MS) {
-    const pipelines = await gitlabApi(tabId, "GET", `/api/v4/projects/${encodeProject(projectPath)}/pipelines?${query}`);
-    if (Array.isArray(pipelines) && pipelines.length > 0) {
-      return pipelines[0];
-    }
-    await delay(POLL_INTERVAL_MS);
-  }
-
-  throw new Error(`超时未找到 sha=${shortSha(mergeCommitSha)} 的 master pipeline`);
-}
-
-async function triggerJobs(tabId, projectPath, pipelineId, expectedNames) {
-  const jobs = await gitlabApi(
-    tabId,
-    "GET",
-    `/api/v4/projects/${encodeProject(projectPath)}/pipelines/${pipelineId}/jobs?per_page=100&include_retried=true`
-  );
-
-  if (!Array.isArray(jobs)) {
-    throw new Error("读取 pipeline jobs 失败");
-  }
-
+async function playJobsByDom(tabId, jobs) {
   const result = [];
 
-  for (const name of expectedNames) {
-    const job = jobs.find((item) => item.name === name);
-    if (!job) {
-      result.push({ name, status: "missing" });
+  for (const job of jobs) {
+    if (!job.href) {
+      result.push({ name: job.name, status: job.status || "missing" });
       continue;
     }
 
-    if (job.status === "manual") {
-      await gitlabApi(tabId, "POST", `/api/v4/projects/${encodeProject(projectPath)}/jobs/${job.id}/play`);
-      result.push({ name, status: "played" });
+    if (job.status && job.status !== "manual") {
+      result.push({ name: job.name, status: job.status });
       continue;
     }
 
-    result.push({ name, status: job.status });
+    log(`打开 job 页面：${job.name}`);
+    await navigateTab(tabId, job.href);
+
+    const playResult = await sendToTab(tabId, {
+      type: "playManualJob",
+      jobName: job.name
+    });
+
+    if (!playResult?.ok) {
+      result.push({ name: job.name, status: "failed", message: playResult?.error || "DOM 点击执行失败" });
+      continue;
+    }
+
+    result.push({ name: job.name, status: playResult.status || "played" });
   }
 
   return result;
-}
-
-async function gitlabApi(tabId, method, path) {
-  const response = await sendToTab(tabId, {
-    type: "gitlabApi",
-    method,
-    path
-  });
-
-  if (!response?.ok) {
-    throw new Error(response?.error || `${method} ${path} 失败`);
-  }
-
-  return response.data;
 }
 
 function updateTask(id, patch) {
@@ -248,7 +211,34 @@ function snapshot() {
 }
 
 function createTab(url) {
-  return chrome.tabs.create({ url, active: false });
+  return chrome.tabs.create({ url, active: true });
+}
+
+function navigateTab(tabId, url) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("页面跳转加载超时"));
+    }, 60000);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.update(tabId, { url, active: true }, () => {
+      if (chrome.runtime.lastError) {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        reject(new Error(chrome.runtime.lastError.message));
+      }
+    });
+  });
 }
 
 function waitForTabComplete(tabId) {
@@ -302,16 +292,8 @@ async function sendToTab(tabId, message) {
   throw new Error(lastError?.message || "content script 未响应");
 }
 
-function encodeProject(projectPath) {
-  return encodeURIComponent(projectPath);
-}
-
-function shortSha(sha) {
-  return String(sha || "").slice(0, 8);
-}
-
 function formatJobResult(result) {
-  return result.map((item) => `${item.name}: ${item.status}`).join("；");
+  return result.map((item) => `${item.name}: ${item.status}${item.message ? `(${item.message})` : ""}`).join("；");
 }
 
 function delay(ms) {
