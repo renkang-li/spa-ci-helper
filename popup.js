@@ -12,6 +12,7 @@ const els = {
   closeSuccessTabs: document.querySelector("#closeSuccessTabs"),
   visibleExecution: document.querySelector("#visibleExecution"),
   slowMode: document.querySelector("#slowMode"),
+  version: document.querySelector("#version"),
   runState: document.querySelector("#runState"),
   summary: document.querySelector("#summary"),
   taskList: document.querySelector("#taskList"),
@@ -20,6 +21,8 @@ const els = {
 
 let tasks = [];
 let logs = [];
+
+els.version.textContent = `v${chrome.runtime.getManifest().version}`;
 
 function parseMergeRequests(text) {
   const pattern = /https:\/\/git\.papamk\.com\/(.+?)\/-\/merge_requests\/(\d+)/g;

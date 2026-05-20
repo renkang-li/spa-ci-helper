@@ -58,6 +58,10 @@ async function mergeMr() {
 }
 
 async function gitlabApi(method, path) {
+  if (method !== "GET") {
+    return { ok: false, error: `插件 API 查询层只允许 GET，已拦截 ${method} ${path}` };
+  }
+
   const headers = {
     "Accept": "application/json",
     "X-Requested-With": "XMLHttpRequest"

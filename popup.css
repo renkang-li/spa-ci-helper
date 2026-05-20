@@ -42,6 +42,12 @@ h1 {
   line-height: 1.2;
 }
 
+.version {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .state {
   min-width: 64px;
   border: 1px solid var(--line);

@@ -39,7 +39,7 @@ async function handleMessage(message) {
           slowMode: message.options?.slowMode === true
         }
       };
-      log(`收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}，可视化：${state.options.visibleExecution ? "开" : "关"}，慢速：${state.options.slowMode ? "开" : "关"}`);
+      log(`SPA CI Helper v${chrome.runtime.getManifest().version} 收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}，可视化：${state.options.visibleExecution ? "开" : "关"}，慢速：${state.options.slowMode ? "开" : "关"}`);
       notify();
       processQueue();
       return snapshot();
@@ -266,6 +266,10 @@ async function playJobsByDom(tabId, jobs) {
 }
 
 async function gitlabApi(tabId, method, path) {
+  if (method !== "GET") {
+    throw new Error(`插件 API 查询层只允许 GET，已拦截 ${method} ${path}`);
+  }
+
   const response = await sendToTab(tabId, {
     type: "gitlabApi",
     method,
