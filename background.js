@@ -527,13 +527,18 @@ async function runPageAction(message) {
     }
 
     button.scrollIntoView({ block: "center", inline: "center" });
+    markTarget(button);
+    await delay(300);
     clickElement(button);
 
-    await clickConfirmIfPresent();
-    const merged = await waitForCondition(() => isMergedPage() || !document.contains(button), DEFAULT_TIMEOUT_MS);
+    // Return quickly. GitLab may reload the page after this click, which would
+    // destroy this injected execution context. The background worker verifies
+    // the merge by polling the MR API.
+    setTimeout(() => {
+      clickConfirmIfPresent().catch(() => {});
+    }, 300);
 
-    if (!merged) return { ok: false, error: "点击合并后未确认页面已合并" };
-    return { ok: true, merged: true, sourceBranch };
+    return { ok: true, merged: false, clicked: true, sourceBranch };
   }
 
   async function gitlabApi(method, path) {
