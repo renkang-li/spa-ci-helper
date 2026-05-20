@@ -19,17 +19,16 @@
         <textarea id="sourceText" spellcheck="false" placeholder="https://git.papamk.com/lf/minishops/.../-/merge_requests/26"></textarea>
         <div class="actions">
           <button id="parseBtn" type="button">解析</button>
-          <button id="loadSampleBtn" type="button" class="secondary">读取 you-should-know</button>
         </div>
       </section>
 
       <section class="section grid">
         <label class="check">
-          <input id="releaseMinor" type="checkbox" checked />
+          <input id="releaseMinor" type="radio" name="releaseJob" value="release-minor" checked />
           <span>release-minor</span>
         </label>
         <label class="check">
-          <input id="releasePatch" type="checkbox" checked />
+          <input id="releasePatch" type="radio" name="releaseJob" value="release-patch" />
           <span>release-patch</span>
         </label>
         <label class="check">

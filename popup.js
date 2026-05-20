@@ -3,7 +3,6 @@ const GITLAB_ORIGIN = "https://git.papamk.com";
 const els = {
   sourceText: document.querySelector("#sourceText"),
   parseBtn: document.querySelector("#parseBtn"),
-  loadSampleBtn: document.querySelector("#loadSampleBtn"),
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   clearBtn: document.querySelector("#clearBtn"),
@@ -64,10 +63,7 @@ function parseMergeRequests(text) {
 }
 
 function selectedJobs() {
-  return [
-    els.releaseMinor.checked ? "release-minor" : null,
-    els.releasePatch.checked ? "release-patch" : null
-  ].filter(Boolean);
+  return [els.releasePatch.checked ? "release-patch" : "release-minor"];
 }
 
 function statusClass(status) {
@@ -169,11 +165,6 @@ els.parseBtn.addEventListener("click", async () => {
   tasks = parseMergeRequests(els.sourceText.value);
   await chrome.storage.local.set({ draftText: els.sourceText.value });
   render({ tasks, running: false });
-});
-
-els.loadSampleBtn.addEventListener("click", () => {
-  els.sourceText.value = "请在这里粘贴 you-should-know.md 里的 MR 列表。Chrome 插件无法直接读取本地文件。";
-  els.sourceText.focus();
 });
 
 els.startBtn.addEventListener("click", async () => {
