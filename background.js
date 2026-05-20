@@ -1,4 +1,5 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
+const BUILD_ID = "direct-scripting-scheduled-clicks";
 const POLL_INTERVAL_MS = 3000;
 const MERGE_TIMEOUT_MS = 120000;
 const PIPELINE_TIMEOUT_MS = 180000;
@@ -39,7 +40,7 @@ async function handleMessage(message) {
           slowMode: message.options?.slowMode === true
         }
       };
-      log(`SPA CI Helper v${chrome.runtime.getManifest().version} 收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}，可视化：${state.options.visibleExecution ? "开" : "关"}，慢速：${state.options.slowMode ? "开" : "关"}`);
+      log(`SPA CI Helper v${chrome.runtime.getManifest().version} ${BUILD_ID} 收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}，可视化：${state.options.visibleExecution ? "开" : "关"}，慢速：${state.options.slowMode ? "开" : "关"}`);
       notify();
       processQueue();
       return snapshot();
@@ -538,8 +539,7 @@ async function runPageAction(message) {
     button.scrollIntoView({ block: "center", inline: "center" });
     markTarget(button);
     await delay(300);
-    clickElement(button);
-    await clickConfirmIfPresent();
+    scheduleClick(button, true);
 
     return { ok: true, merged: false, clicked: true, sourceBranch };
   }
@@ -586,7 +586,7 @@ async function runPageAction(message) {
 
       markTarget(directJobLink);
       await delay(600);
-      clickElement(directJobLink);
+      scheduleClick(directJobLink, false);
       return { ok: true, name: jobName, status, href, clicked: true, diagnostics: "direct-link" };
     }
 
@@ -632,7 +632,7 @@ async function runPageAction(message) {
 
         markTarget(item);
         await delay(600);
-        clickElement(item);
+        scheduleClick(item, false);
         return { ok: true, name: jobName, status, href, clicked: true };
       }
 
@@ -679,10 +679,7 @@ async function runPageAction(message) {
 
     markTarget(fallback);
     await delay(400);
-    clickElement(fallback);
-
-    await clickConfirmIfPresent();
-    await delay(1500);
+    scheduleClick(fallback, true);
 
     return { ok: true, status: "played" };
   }
@@ -863,6 +860,17 @@ async function runPageAction(message) {
     element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
     element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
     element.click();
+  }
+
+  function scheduleClick(element, confirmAfterClick) {
+    setTimeout(() => {
+      clickElement(element);
+      if (confirmAfterClick) {
+        setTimeout(() => {
+          clickConfirmIfPresent().catch(() => {});
+        }, 500);
+      }
+    }, 100);
   }
 
   function absoluteUrl(href) {
