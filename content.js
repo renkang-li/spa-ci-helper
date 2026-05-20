@@ -1,11 +1,18 @@
-const DEFAULT_TIMEOUT_MS = 60000;
+var DEFAULT_TIMEOUT_MS = 60000;
+var SPA_CI_HELPER_CONTENT_VERSION = "0.1.4";
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  handleMessage(message).then(sendResponse).catch((error) => {
-    sendResponse({ ok: false, error: error.message });
+globalThis.__spaCiHelperHandleMessage = handleMessage;
+globalThis.__spaCiHelperContentVersion = SPA_CI_HELPER_CONTENT_VERSION;
+
+if (!globalThis.__spaCiHelperListenerInstalled) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    globalThis.__spaCiHelperHandleMessage(message).then(sendResponse).catch((error) => {
+      sendResponse({ ok: false, error: error.message });
+    });
+    return true;
   });
-  return true;
-});
+  globalThis.__spaCiHelperListenerInstalled = true;
+}
 
 async function handleMessage(message) {
   switch (message?.type) {

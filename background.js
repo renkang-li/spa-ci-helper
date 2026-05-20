@@ -466,7 +466,23 @@ async function sendToTab(tabId, message) {
 
   while (Date.now() - startedAt < 15000) {
     try {
-      return await chrome.tabs.sendMessage(tabId, message);
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content.js"]
+      });
+
+      const [injection] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (payload) => {
+          if (!globalThis.__spaCiHelperHandleMessage) {
+            return { ok: false, error: "最新版 content script 未就绪" };
+          }
+          return globalThis.__spaCiHelperHandleMessage(payload);
+        },
+        args: [message]
+      });
+
+      return injection?.result;
     } catch (error) {
       lastError = error;
       await delay(500);
