@@ -11,7 +11,6 @@ let state = {
   tasks: [],
   options: {
     jobs: ["release-minor", "release-patch"],
-    closeSuccessTabs: true,
     visibleExecution: true,
     slowMode: true
   }
@@ -58,7 +57,6 @@ function start(message) {
     tasks: (message.tasks || []).map((task) => ({ ...task, status: "pending", message: "等待执行" })),
     options: {
       jobs: message.options?.jobs?.length ? message.options.jobs : ["release-minor", "release-patch"],
-      closeSuccessTabs: message.options?.closeSuccessTabs !== false,
       visibleExecution: message.options?.visibleExecution !== false,
       slowMode: message.options?.slowMode === true
     }
@@ -133,12 +131,6 @@ async function processTask(task) {
   const jobResults = await triggerReleaseJobs(tab.id, pipelineUrl, state.options.jobs);
   updateTask(task.id, { status: "done", message: formatJobResult(jobResults) });
   log(`发布 job 结果：${formatJobResult(jobResults)}`);
-
-  if (state.options.closeSuccessTabs) {
-    await chrome.tabs.remove(tab.id).catch(() => {});
-    updateTask(task.id, { tabClosed: true, currentUrl: "" });
-    log(`已关闭成功标签页 #${tab.id}`);
-  }
 }
 
 async function waitForMergeCommit(tabId, task) {
@@ -481,7 +473,7 @@ function updateTask(id, patch) {
 }
 
 function setTaskTab(id, tab) {
-  updateTask(id, { tabId: tab.id, windowId: tab.windowId, currentUrl: tab.url || "", tabClosed: false });
+  updateTask(id, { tabId: tab.id, windowId: tab.windowId, currentUrl: tab.url || "" });
 }
 
 function setTaskByTab(tab) {

@@ -10,7 +10,6 @@ const els = {
   reloadBtn: document.querySelector("#reloadBtn"),
   releaseMinor: document.querySelector("#releaseMinor"),
   releasePatch: document.querySelector("#releasePatch"),
-  closeSuccessTabs: document.querySelector("#closeSuccessTabs"),
   visibleExecution: document.querySelector("#visibleExecution"),
   slowMode: document.querySelector("#slowMode"),
   version: document.querySelector("#version"),
@@ -125,7 +124,7 @@ function render(state = {}) {
 
     meta.append(url);
 
-    if (task.tabId && !task.tabClosed) {
+    if (task.tabId) {
       const focusButton = document.createElement("button");
       focusButton.className = "mini";
       focusButton.type = "button";
@@ -192,7 +191,6 @@ els.startBtn.addEventListener("click", async () => {
     tasks,
     options: {
       jobs,
-      closeSuccessTabs: els.closeSuccessTabs.checked,
       visibleExecution: els.visibleExecution.checked,
       slowMode: els.slowMode.checked
     }
