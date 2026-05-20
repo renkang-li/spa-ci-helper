@@ -21,11 +21,11 @@
 - background 串行打开 MR 页面。
 - background 通过 `chrome.scripting.executeScript` 在当前 GitLab 页面直接执行 DOM 操作。
 - 合并后通过当前登录态 API 只做查询：
+  - 合并前预检 MR，已合并、冲突、非 opened 状态会跳过
   - 读取 MR 的 `merge_commit_sha`
   - 用 `merge_commit_sha` 查 master pipeline
-  - 拿到 pipeline 页面链接
-- 打开 pipeline 页面，通过 DOM 点击手动 job 齿轮。
-- 从齿轮菜单里直接点击 `release-minor` / `release-patch`，进入 job 页面后再通过 DOM 点击页面上的执行按钮。
+  - 读取 pipeline jobs，拿到目标 job 页面链接
+- 进入 job 页面后通过 DOM 点击页面上的执行按钮。
 
 有副作用的动作走 DOM 点击；API 只用于查询和精确定位。
 

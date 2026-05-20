@@ -67,7 +67,7 @@ function selectedJobs() {
 }
 
 function statusClass(status) {
-  if (status === "done") return "done";
+  if (status === "done" || status === "skipped") return "done";
   if (status === "failed" || status === "stopped") return "failed";
   if (status !== "pending") return "running";
   return "";
@@ -80,12 +80,13 @@ function render(state = {}) {
   const doneCount = allTasks.filter((task) => task.status === "done").length;
   const failedCount = allTasks.filter((task) => task.status === "failed").length;
   const pendingCount = allTasks.filter((task) => task.status === "pending").length;
+  const skippedCount = allTasks.filter((task) => task.status === "skipped").length;
 
   els.runState.textContent = running ? "running" : "idle";
   els.startBtn.disabled = allTasks.length === 0 || running;
   els.stopBtn.disabled = !running;
   els.summary.textContent = allTasks.length
-    ? `共 ${allTasks.length} 个 MR，完成 ${doneCount}，失败 ${failedCount}，待执行 ${pendingCount}`
+    ? `共 ${allTasks.length} 个 MR，完成 ${doneCount}，失败 ${failedCount}，跳过 ${skippedCount}，待执行 ${pendingCount}`
     : "尚未解析任务";
 
   els.taskList.innerHTML = "";

@@ -1,5 +1,5 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
-const BUILD_ID = "minimal-direct-scripting";
+const BUILD_ID = "precheck-api-job-dom-play";
 const POLL_INTERVAL_MS = 3000;
 const MERGE_TIMEOUT_MS = 120000;
 const PIPELINE_TIMEOUT_MS = 180000;
@@ -103,6 +103,14 @@ async function processTask(task) {
   await visualPause(`MR 页面已打开：${task.projectPath}!${task.mrIid}`);
 
   updateTask(task.id, { status: "merging", message: "DOM 点击合并按钮" });
+  const beforeMerge = await getMergeRequest(tab.id, task);
+  const skipReason = getMergeSkipReason(beforeMerge);
+  if (skipReason) {
+    updateTask(task.id, { status: "skipped", message: skipReason });
+    log(`跳过：${task.projectPath}!${task.mrIid} - ${skipReason}`);
+    return;
+  }
+
   const merge = await runPageAction(tab.id, "merge", [], "点击合并按钮");
   if (!merge.ok) throw new Error(merge.error || "合并点击失败");
   await visualPause(`合并点击完成：${task.projectPath}!${task.mrIid}`);
@@ -119,25 +127,40 @@ async function processTask(task) {
   });
 
   const pipeline = await waitForPipeline(tab.id, task.projectPath, mr.merge_commit_sha);
-  const pipelineUrl = pipeline.web_url || `${GITLAB_ORIGIN}/${task.projectPath}/-/pipelines/${pipeline.id}`;
   log(`找到 pipeline #${pipeline.id}`);
 
   updateTask(task.id, {
     pipelineId: pipeline.id,
     status: "triggering_jobs",
-    message: "DOM 点击 pipeline 齿轮和 release job"
+    message: "API 定位 release job，DOM 点击执行"
   });
 
-  const jobResults = await triggerReleaseJobs(tab.id, pipelineUrl, state.options.jobs);
-  updateTask(task.id, { status: "done", message: formatJobResult(jobResults) });
+  const jobs = await findPipelineJobs(tab.id, task.projectPath, pipeline.id, state.options.jobs);
+  const jobResults = await triggerReleaseJobs(tab.id, jobs);
+  const hasReleaseFailure = jobResults.some((job) => ["failed", "missing"].includes(job.status));
+  updateTask(task.id, { status: hasReleaseFailure ? "failed" : "done", message: formatJobResult(jobResults) });
   log(`发布 job 结果：${formatJobResult(jobResults)}`);
+}
+
+async function getMergeRequest(tabId, task) {
+  return gitlabGet(tabId, `/api/v4/projects/${encodeURIComponent(task.projectPath)}/merge_requests/${task.mrIid}`);
+}
+
+function getMergeSkipReason(mr) {
+  if (!mr) return "MR 信息为空";
+  if (mr.state === "merged") return "MR 已合并，跳过";
+  if (mr.state && mr.state !== "opened") return `MR 状态为 ${mr.state}，跳过`;
+  if (mr.has_conflicts) return "MR 存在冲突，跳过";
+  if (String(mr.detailed_merge_status || "").includes("conflict")) return `MR 合并状态为 ${mr.detailed_merge_status}，跳过`;
+  if (String(mr.merge_status || "").includes("cannot_be_merged") && mr.has_conflicts !== false) return `MR 合并状态为 ${mr.merge_status}，跳过`;
+  return "";
 }
 
 async function waitForMergeCommit(tabId, task) {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < MERGE_TIMEOUT_MS) {
-    const mr = await gitlabGet(tabId, `/api/v4/projects/${encodeURIComponent(task.projectPath)}/merge_requests/${task.mrIid}`);
+    const mr = await getMergeRequest(tabId, task);
     if (mr?.state === "merged" && mr.merge_commit_sha) return mr;
     await delay(POLL_INTERVAL_MS);
   }
@@ -164,35 +187,45 @@ async function gitlabGet(tabId, path) {
   return result.data;
 }
 
-async function triggerReleaseJobs(tabId, pipelineUrl, jobs) {
+async function findPipelineJobs(tabId, projectPath, pipelineId, names) {
+  const jobs = await gitlabGet(
+    tabId,
+    `/api/v4/projects/${encodeURIComponent(projectPath)}/pipelines/${pipelineId}/jobs?per_page=100&include_retried=true`
+  );
+
+  if (!Array.isArray(jobs)) throw new Error("API 查询 pipeline jobs 失败");
+
+  return names.map((name) => {
+    const job = jobs.find((item) => item.name === name);
+    return job
+      ? { name, status: job.status, webUrl: job.web_url, id: job.id }
+      : { name, status: "missing", webUrl: "", id: "" };
+  });
+}
+
+async function triggerReleaseJobs(tabId, jobs) {
   const results = [];
 
-  for (const jobName of jobs) {
-    log(`打开 pipeline 页面，准备点击 ${jobName}`);
-    const tab = await navigateTab(tabId, pipelineUrl);
+  for (const job of jobs) {
+    if (!job.webUrl) {
+      results.push({ name: job.name, status: "missing" });
+      continue;
+    }
+
+    if (job.status !== "manual") {
+      results.push({ name: job.name, status: job.status });
+      continue;
+    }
+
+    log(`打开 job 页面：${job.name}`);
+    const tab = await navigateTab(tabId, job.webUrl);
     setTaskByTab(tab);
-    await visualPause(`pipeline 页面已打开，准备点 ${jobName}`);
+    await visualPause(`job 页面已打开：${job.name}`);
 
-    const click = await runPageAction(tabId, "release", [jobName], `点击 ${jobName}`);
-    if (!click.ok) {
-      results.push({ name: jobName, status: "failed", message: click.error || "点击 release job 失败" });
-      continue;
-    }
-
-    if (!click.clicked) {
-      results.push({ name: jobName, status: click.status || "missing", message: click.diagnostics || "" });
-      continue;
-    }
-
-    log(`已点击 ${jobName}`);
-    const jobTab = await waitForTabUrl(tabId, (url) => /\/-\/jobs\/\d+/.test(url), 60000);
-    setTaskByTab(jobTab);
-    await visualPause(`job 页面已打开：${jobName}`);
-
-    const play = await runPageAction(tabId, "play", [jobName], `点击 ${jobName} 执行按钮`);
+    const play = await runPageAction(tabId, "play", [job.name], `点击 ${job.name} 执行按钮`);
     results.push(play.ok
-      ? { name: jobName, status: play.status || "played" }
-      : { name: jobName, status: "failed", message: play.error || "执行按钮点击失败" });
+      ? { name: job.name, status: play.status || "played" }
+      : { name: job.name, status: "failed", message: play.error || "执行按钮点击失败" });
   }
 
   return results;
@@ -231,8 +264,6 @@ async function pageAction(action) {
       return clickMergeButton();
     case "get":
       return fetchJson(firstArg);
-    case "release":
-      return clickReleaseJob(firstArg);
     case "play":
       return clickPlayButton(firstArg);
     default:
@@ -283,42 +314,6 @@ async function pageAction(action) {
     return { ok: true, data };
   }
 
-  async function clickReleaseJob(jobName) {
-    const direct = findJobLink(document, jobName);
-    if (direct) return clickJobLink(direct, jobName, "direct-link");
-
-    const gears = collectManualGears();
-    const seenMenus = [];
-
-    for (const gear of gears) {
-      mark(gear);
-      clickElement(gear);
-
-      const menu = await waitForValue(() => visibleMenus().find((item) => textOf(item).includes(jobName)), 5000);
-      if (!menu) {
-        seenMenus.push(...visibleMenus().map((item) => textOf(item).slice(0, 180)));
-        closeMenus();
-        await sleep(300);
-        continue;
-      }
-
-      const link = findJobLink(menu, jobName);
-      if (link) return clickJobLink(link, jobName, "gear-menu");
-
-      seenMenus.push(textOf(menu).slice(0, 180));
-      closeMenus();
-      await sleep(300);
-    }
-
-    return {
-      ok: true,
-      name: jobName,
-      status: "missing",
-      clicked: false,
-      diagnostics: JSON.stringify({ gearCount: gears.length, menus: seenMenus.slice(0, 4), url: location.href })
-    };
-  }
-
   function clickPlayButton(jobName) {
     if (/已通过|passed|success|running|运行中|pending|等待中/i.test(document.body?.innerText || "") && !findButton(/运行|执行|Play|Run/i)) {
       return { ok: true, status: "already_started" };
@@ -339,53 +334,10 @@ async function pageAction(action) {
     return { ok: true, status: "played" };
   }
 
-  function clickJobLink(link, jobName, source) {
-    const status = jobStatus(link);
-    const href = new URL(link.getAttribute("href") || "", location.origin).href;
-
-    if (["success", "running", "pending"].includes(status)) {
-      closeMenus();
-      return { ok: true, name: jobName, status, href, clicked: false, diagnostics: source };
-    }
-
-    mark(link);
-    scheduleClick(link, false);
-    return { ok: true, name: jobName, status, href, clicked: true, diagnostics: source };
-  }
-
   function getSourceBranch() {
     return [...document.querySelectorAll('a[href*="/-/tree/"]')]
       .map((link) => decodeURIComponent((link.href.match(/\/-\/tree\/([^?#]+)/) || [])[1] || ""))
       .find((branch) => branch && !["master", "main"].includes(branch)) || "";
-  }
-
-  function collectManualGears() {
-    const selectors = [
-      '[data-testid="status_manual_borderless-icon"]',
-      'svg[data-testid="status_manual-icon"]',
-      '[aria-label="status_manual"]',
-      '.ci-status-icon-manual',
-      '.js-ci-status-icon-manual',
-      '[title*="手动"]'
-    ];
-    const nodes = selectors.flatMap((selector) => [...document.querySelectorAll(selector)]);
-    const targets = nodes.flatMap((node) => [
-      node.closest("button, a, [role='button']"),
-      node.closest(".gl-dropdown-toggle"),
-      node.closest(".build"),
-      node
-    ].filter(Boolean));
-    return [...new Set(targets)].filter(isVisible);
-  }
-
-  function findJobLink(root, jobName) {
-    return [...root.querySelectorAll('a[data-testid="job-with-link"], a[href*="/-/jobs/"], a[href*="/jobs/"]')]
-      .find((link) => isVisible(link) && textOf(link).includes(jobName)) || null;
-  }
-
-  function visibleMenus() {
-    return [...document.querySelectorAll('[data-testid="mini-pipeline-graph-dropdown-menu-list"], .js-builds-dropdown-list, .gl-dropdown-contents, .dropdown-menu, [role="menu"]')]
-      .filter(isVisible);
   }
 
   function findVisible(selectors) {
@@ -399,15 +351,6 @@ async function pageAction(action) {
   function findButton(pattern) {
     return [...document.querySelectorAll("button, a[role='button']")]
       .find((element) => !element.disabled && isVisible(element) && pattern.test(textOf(element))) || null;
-  }
-
-  function jobStatus(element) {
-    const text = `${element.getAttribute("title") || ""} ${textOf(element)}`;
-    if (/已通过|success|passed/i.test(text)) return "success";
-    if (/running|运行中/i.test(text)) return "running";
-    if (/pending|等待/i.test(text)) return "pending";
-    if (/手动|manual/i.test(text)) return "manual";
-    return "unknown";
   }
 
   function scheduleClick(element, confirmAfterClick) {
@@ -434,24 +377,6 @@ async function pageAction(action) {
     element.scrollIntoView({ block: "center", inline: "center" });
     element.style.outline = "3px solid #2563eb";
     element.style.outlineOffset = "2px";
-  }
-
-  function closeMenus() {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  }
-
-  async function waitForValue(reader, timeoutMs) {
-    const end = Date.now() + timeoutMs;
-    while (Date.now() < end) {
-      const value = reader();
-      if (value) return value;
-      await sleep(200);
-    }
-    return null;
-  }
-
-  function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function textOf(element) {
@@ -524,27 +449,6 @@ function waitForTabLoad(tabId, timeoutMs = 60000) {
     }
 
     chrome.tabs.onUpdated.addListener(listener);
-  });
-}
-
-function waitForTabUrl(tabId, predicate, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(done, timeoutMs, new Error("等待 job 页面跳转超时"));
-
-    function done(error, tab) {
-      clearTimeout(timer);
-      chrome.tabs.onUpdated.removeListener(listener);
-      error ? reject(error) : resolve(tab);
-    }
-
-    function listener(updatedTabId, changeInfo, tab) {
-      if (updatedTabId === tabId && predicate(changeInfo.url || tab.url || "")) done(null, tab);
-    }
-
-    chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.get(tabId).then((tab) => {
-      if (predicate(tab.url || "")) done(null, tab);
-    }).catch((error) => done(error));
   });
 }
 

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SPA CI Helper",
   "description": "Batch merge GitLab merge requests and trigger release jobs with the current browser login session.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "action": {
     "default_popup": "popup.html",
     "default_title": "SPA CI Helper"
