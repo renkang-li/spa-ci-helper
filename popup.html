@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SPA CI Helper</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>SPA CI Helper</h1>
+        <span id="runState" class="state">idle</span>
+      </header>
+
+      <section class="section">
+        <label class="label" for="sourceText">粘贴 MR 聊天记录</label>
+        <textarea id="sourceText" spellcheck="false" placeholder="https://git.papamk.com/lf/minishops/.../-/merge_requests/26"></textarea>
+        <div class="actions">
+          <button id="parseBtn" type="button">解析</button>
+          <button id="loadSampleBtn" type="button" class="secondary">读取 you-should-know</button>
+        </div>
+      </section>
+
+      <section class="section grid">
+        <label class="check">
+          <input id="releaseMinor" type="checkbox" checked />
+          <span>release-minor</span>
+        </label>
+        <label class="check">
+          <input id="releasePatch" type="checkbox" checked />
+          <span>release-patch</span>
+        </label>
+        <label class="check">
+          <input id="closeSuccessTabs" type="checkbox" checked />
+          <span>关闭成功标签页</span>
+        </label>
+      </section>
+
+      <section class="section">
+        <div class="actions">
+          <button id="startBtn" type="button" disabled>开始执行</button>
+          <button id="stopBtn" type="button" class="danger" disabled>停止</button>
+          <button id="clearBtn" type="button" class="secondary">清空状态</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="summary" id="summary">尚未解析任务</div>
+        <ol id="taskList" class="tasks"></ol>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
