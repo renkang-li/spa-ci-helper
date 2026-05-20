@@ -234,7 +234,11 @@ async function playJobsFromPipelineByDom(tabId, pipelineUrl, jobNames) {
     }
 
     if (!clickResult.clicked) {
-      result.push({ name: jobName, status: clickResult.status || "missing" });
+      result.push({
+        name: jobName,
+        status: clickResult.status || "missing",
+        message: clickResult.diagnostics || ""
+      });
       continue;
     }
 

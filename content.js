@@ -1,5 +1,5 @@
 var DEFAULT_TIMEOUT_MS = 60000;
-var SPA_CI_HELPER_CONTENT_VERSION = "0.1.4";
+var SPA_CI_HELPER_CONTENT_VERSION = "0.1.5";
 
 globalThis.__spaCiHelperHandleMessage = handleMessage;
 globalThis.__spaCiHelperContentVersion = SPA_CI_HELPER_CONTENT_VERSION;
@@ -100,29 +100,49 @@ async function gitlabApi(method, path) {
 async function clickReleaseJobInPipeline(jobName) {
   await waitForPageIdle();
 
+  const directJobLink = findDirectJobLink(jobName);
+  if (directJobLink) {
+    const status = getJobStatus(directJobLink);
+    const href = absoluteUrl(directJobLink.getAttribute("href") || "");
+    if (["success", "running", "pending"].includes(status)) {
+      return { ok: true, name: jobName, status, href, clicked: false, diagnostics: "direct-link" };
+    }
+
+    markTarget(directJobLink);
+    await delay(600);
+    clickElement(directJobLink);
+    return { ok: true, name: jobName, status, href, clicked: true, diagnostics: "direct-link" };
+  }
+
   const gears = await waitForValue(() => {
-    const nodes = document.querySelectorAll(
-      '[data-testid="status_manual_borderless-icon"], [data-testid*="manual"][data-testid*="icon"], .ci-status-icon-manual'
-    );
+    const nodes = collectManualGearNodes();
     const items = clickableElements(nodes);
     return items.length ? items : null;
   }, DEFAULT_TIMEOUT_MS);
 
   if (!gears?.length) {
-    return { ok: false, error: "pipeline 页面未找到手动 job 齿轮" };
+    return {
+      ok: false,
+      error: `pipeline 页面未找到手动 job 齿轮；diagnostics=${JSON.stringify(getPipelineDiagnostics(jobName))}`
+    };
   }
+
+  const seenMenus = [];
 
   for (const gear of gears) {
     gear.scrollIntoView({ block: "center", inline: "center" });
+    markTarget(gear);
     await delay(500);
     clickElement(gear);
 
-    const menu = await waitForElement(
-      '[data-testid="mini-pipeline-graph-dropdown-menu-list"], .js-builds-dropdown-list, .gl-dropdown-contents, [role="menu"]',
-      10000
-    );
+    const menu = await waitForMenuContainingJob(jobName, 10000);
 
-    if (!menu) continue;
+    if (!menu) {
+      seenMenus.push(...getVisibleMenuTexts());
+      closeMenus();
+      await delay(300);
+      continue;
+    }
 
     await delay(1200);
 
@@ -132,24 +152,34 @@ async function clickReleaseJobInPipeline(jobName) {
       const href = absoluteUrl(item.getAttribute("href") || "");
 
       if (["success", "running", "pending"].includes(status)) {
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        closeMenus();
         return { ok: true, name: jobName, status, href, clicked: false };
       }
 
-      item.scrollIntoView({ block: "center", inline: "center" });
-      item.style.outline = "3px solid #2563eb";
-      item.style.outlineOffset = "2px";
+      markTarget(item);
       await delay(600);
       setTimeout(() => clickElement(item), 100);
       return { ok: true, name: jobName, status, href, clicked: true };
     }
 
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    seenMenus.push(normalizeText(menu).slice(0, 240));
+    closeMenus();
     await delay(300);
   }
 
-  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  return { ok: true, name: jobName, status: "missing", href: "", clicked: false };
+  closeMenus();
+  return {
+    ok: true,
+    name: jobName,
+    status: "missing",
+    href: "",
+    clicked: false,
+    diagnostics: JSON.stringify({
+      gearCount: gears.length,
+      menus: seenMenus.slice(0, 6),
+      page: location.href
+    })
+  };
 }
 
 async function playManualJob(jobName) {
@@ -254,6 +284,33 @@ function findButtonByText(pattern) {
   });
 }
 
+function findDirectJobLink(jobName) {
+  const links = [...document.querySelectorAll('a[data-testid="job-with-link"], a[href*="/-/jobs/"], a[href*="/jobs/"]')];
+  return links.find((link) => isVisible(link) && normalizeText(link).includes(jobName)) || null;
+}
+
+function collectManualGearNodes() {
+  const selectors = [
+    '[data-testid="status_manual_borderless-icon"]',
+    '[data-testid*="manual"][data-testid*="icon"]',
+    '[aria-label="status_manual"]',
+    '[title*="手动"]',
+    '[title*="manual" i]',
+    '.ci-status-icon-manual',
+    '.js-ci-status-icon-manual',
+    'svg[data-testid="status_manual-icon"]'
+  ];
+  const nodes = [];
+
+  for (const selector of selectors) {
+    for (const node of document.querySelectorAll(selector)) {
+      if (!nodes.includes(node)) nodes.push(node);
+    }
+  }
+
+  return nodes;
+}
+
 function clickElement(element) {
   element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
   element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
@@ -265,14 +322,59 @@ function clickableElements(nodes) {
   const result = [];
 
   for (const node of nodes) {
-    const clickable = node.closest("button, a, [role='button']") || node;
-    if (!seen.has(clickable) && isVisible(clickable)) {
-      seen.add(clickable);
-      result.push(clickable);
+    const candidates = [
+      node.closest("button, a, [role='button']"),
+      node.closest(".gl-dropdown-toggle"),
+      node.closest(".js-builds-dropdown-button"),
+      node.closest(".ci-action-icon-container"),
+      node.closest(".build"),
+      node.closest(".stage-cell"),
+      node
+    ].filter(Boolean);
+
+    for (const clickable of candidates) {
+      if (!seen.has(clickable) && isVisible(clickable)) {
+        seen.add(clickable);
+        result.push(clickable);
+      }
     }
   }
 
   return result;
+}
+
+async function waitForMenuContainingJob(jobName, timeoutMs) {
+  return waitForValue(() => {
+    const menus = getVisibleMenus();
+    return menus.find((menu) => normalizeText(menu).includes(jobName)) || null;
+  }, timeoutMs);
+}
+
+function getVisibleMenus() {
+  const selectors = [
+    '[data-testid="mini-pipeline-graph-dropdown-menu-list"]',
+    '.js-builds-dropdown-list',
+    '.gl-dropdown-contents',
+    '.dropdown-menu',
+    '[role="menu"]'
+  ];
+  const menus = [];
+
+  for (const selector of selectors) {
+    for (const menu of document.querySelectorAll(selector)) {
+      if (!menus.includes(menu) && isVisible(menu)) menus.push(menu);
+    }
+  }
+
+  return menus;
+}
+
+function getVisibleMenuTexts() {
+  return getVisibleMenus().map((menu) => normalizeText(menu).slice(0, 240)).filter(Boolean);
+}
+
+function closeMenus() {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 }
 
 function findJobItem(menu, jobName) {
@@ -292,6 +394,22 @@ function getJobStatus(item) {
 function absoluteUrl(href) {
   if (!href) return "";
   return new URL(href, window.location.origin).href;
+}
+
+function markTarget(element) {
+  element.scrollIntoView({ block: "center", inline: "center" });
+  element.style.outline = "3px solid #2563eb";
+  element.style.outlineOffset = "2px";
+}
+
+function getPipelineDiagnostics(jobName) {
+  return {
+    jobName,
+    url: location.href,
+    manualNodeCount: collectManualGearNodes().length,
+    directJobText: findDirectJobLink(jobName) ? normalizeText(findDirectJobLink(jobName)).slice(0, 160) : "",
+    visibleMenuTexts: getVisibleMenuTexts().slice(0, 4)
+  };
 }
 
 function normalizeText(element) {
