@@ -12,10 +12,12 @@ const els = {
   closeSuccessTabs: document.querySelector("#closeSuccessTabs"),
   runState: document.querySelector("#runState"),
   summary: document.querySelector("#summary"),
-  taskList: document.querySelector("#taskList")
+  taskList: document.querySelector("#taskList"),
+  logList: document.querySelector("#logList")
 };
 
 let tasks = [];
+let logs = [];
 
 function parseMergeRequests(text) {
   const pattern = /https:\/\/git\.papamk\.com\/(.+?)\/-\/merge_requests\/(\d+)/g;
@@ -60,6 +62,7 @@ function statusClass(status) {
 
 function render(state = {}) {
   const allTasks = state.tasks || tasks;
+  const allLogs = state.logs || logs;
   const running = state.running === true;
   const doneCount = allTasks.filter((task) => task.status === "done").length;
   const failedCount = allTasks.filter((task) => task.status === "failed").length;
@@ -98,6 +101,14 @@ function render(state = {}) {
     li.append(title, message);
     els.taskList.append(li);
   }
+
+  els.logList.innerHTML = "";
+  for (const line of allLogs.slice(-80)) {
+    const li = document.createElement("li");
+    li.className = "log";
+    li.textContent = line;
+    els.logList.append(li);
+  }
 }
 
 async function send(message) {
@@ -108,10 +119,12 @@ async function refreshState() {
   const state = await send({ type: "getState" });
   if (state?.tasks?.length) {
     tasks = state.tasks;
+    logs = state.logs || logs;
     render(state);
     return;
   }
-  render({ tasks, running: state?.running === true });
+  logs = state?.logs || logs;
+  render({ tasks, logs, running: state?.running === true });
 }
 
 els.parseBtn.addEventListener("click", async () => {
@@ -132,7 +145,10 @@ els.startBtn.addEventListener("click", async () => {
     return;
   }
 
-  await send({
+  logs = [`[${new Date().toLocaleTimeString()}] popup 已点击开始，发送任务到后台`];
+  render({ tasks, logs, running: true });
+
+  const response = await send({
     type: "start",
     tasks,
     options: {
@@ -140,7 +156,16 @@ els.startBtn.addEventListener("click", async () => {
       closeSuccessTabs: els.closeSuccessTabs.checked
     }
   });
-  await refreshState();
+
+  if (response?.ok === false) {
+    logs = [...logs, `[${new Date().toLocaleTimeString()}] 启动失败：${response.error}`];
+    render({ tasks, logs, running: false });
+    return;
+  }
+
+  tasks = response.tasks || tasks;
+  logs = response.logs || logs;
+  render(response);
 });
 
 els.stopBtn.addEventListener("click", async () => {
@@ -153,12 +178,14 @@ els.clearBtn.addEventListener("click", async () => {
   els.sourceText.value = "";
   await chrome.storage.local.remove(["draftText"]);
   await send({ type: "clear" });
+  logs = [];
   render({ tasks, running: false });
 });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "stateUpdated") {
     tasks = message.state.tasks || tasks;
+    logs = message.state.logs || logs;
     render(message.state);
   }
 });

@@ -6,6 +6,7 @@ const PIPELINE_TIMEOUT_MS = 180000;
 let state = {
   running: false,
   stopRequested: false,
+  logs: [],
   tasks: [],
   options: {
     jobs: ["release-minor", "release-patch"],
@@ -27,12 +28,14 @@ async function handleMessage(message) {
       state = {
         running: true,
         stopRequested: false,
+        logs: [],
         tasks: (message.tasks || []).map((task) => ({ ...task, status: "pending", message: "等待执行" })),
         options: {
           jobs: message.options?.jobs?.length ? message.options.jobs : ["release-minor", "release-patch"],
           closeSuccessTabs: message.options?.closeSuccessTabs !== false
         }
       };
+      log(`收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}`);
       notify();
       processQueue();
       return snapshot();
@@ -44,6 +47,7 @@ async function handleMessage(message) {
       state = {
         running: false,
         stopRequested: false,
+        logs: [],
         tasks: [],
         options: state.options
       };
@@ -57,6 +61,7 @@ async function handleMessage(message) {
 }
 
 async function processQueue() {
+  log("后台队列开始执行");
   for (const task of state.tasks) {
     if (state.stopRequested) {
       updateTask(task.id, { status: "stopped", message: "已停止，剩余任务未执行" });
@@ -77,16 +82,20 @@ async function processQueue() {
 
   state.running = false;
   state.stopRequested = false;
+  log("后台队列执行结束");
   notify();
 }
 
 async function processTask(task) {
+  log(`打开 MR：${task.projectPath}!${task.mrIid}`);
   updateTask(task.id, { status: "opening_mr", message: "打开 MR 页面" });
   const tab = await createTab(task.url);
+  log(`已创建标签页 #${tab.id}`);
 
   try {
     await waitForTabComplete(tab.id);
 
+    log(`页面加载完成，准备合并：${task.projectPath}!${task.mrIid}`);
     updateTask(task.id, { status: "merging", message: "等待合并按钮并点击" });
     const mergeResult = await sendToTab(tab.id, {
       type: "mergeMr",
@@ -98,6 +107,7 @@ async function processTask(task) {
       throw new Error(mergeResult?.error || "合并点击失败");
     }
 
+    log(`MR 合并动作完成，读取 merge_commit_sha：${task.projectPath}!${task.mrIid}`);
     updateTask(task.id, { status: "reading_mr", message: "读取 merge_commit_sha" });
     const mr = await waitForMergeCommit(tab.id, task);
     updateTask(task.id, {
@@ -107,6 +117,7 @@ async function processTask(task) {
     });
 
     const pipeline = await waitForPipeline(tab.id, task.projectPath, mr.merge_commit_sha);
+    log(`找到 pipeline #${pipeline.id}：${task.projectPath}!${task.mrIid}`);
     updateTask(task.id, {
       pipelineId: pipeline.id,
       status: "triggering_jobs",
@@ -114,6 +125,7 @@ async function processTask(task) {
     });
 
     const jobResult = await triggerJobs(tab.id, task.projectPath, pipeline.id, state.options.jobs);
+    log(`发布 job 结果：${formatJobResult(jobResult)}`);
     updateTask(task.id, {
       status: "done",
       message: formatJobResult(jobResult)
@@ -121,8 +133,10 @@ async function processTask(task) {
 
     if (state.options.closeSuccessTabs) {
       await chrome.tabs.remove(tab.id).catch(() => {});
+      log(`已关闭成功标签页 #${tab.id}`);
     }
   } catch (error) {
+    log(`失败：${task.projectPath}!${task.mrIid} - ${error.message || "执行失败"}`);
     updateTask(task.id, {
       status: "failed",
       message: error.message || "执行失败"
@@ -217,6 +231,16 @@ function updateTask(id, patch) {
 
 function notify() {
   chrome.runtime.sendMessage({ type: "stateUpdated", state: snapshot() }).catch(() => {});
+}
+
+function log(message) {
+  const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  state.logs.push(`[${time}] ${message}`);
+  if (state.logs.length > 100) {
+    state.logs = state.logs.slice(-100);
+  }
+  console.log(message);
+  notify();
 }
 
 function snapshot() {
