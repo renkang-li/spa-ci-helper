@@ -117,7 +117,7 @@ async function processTask(task) {
       type: "mergeMr",
       projectPath: task.projectPath,
       mrIid: task.mrIid
-    });
+    }, "点击合并按钮");
 
     if (!mergeResult?.ok) {
       throw new Error(mergeResult?.error || "合并点击失败");
@@ -226,7 +226,7 @@ async function playJobsFromPipelineByDom(tabId, pipelineUrl, jobNames) {
     const clickResult = await sendToTab(tabId, {
       type: "clickReleaseJobInPipeline",
       jobName
-    });
+    }, `点击 pipeline 齿轮菜单里的 ${jobName}`);
 
     if (!clickResult?.ok) {
       result.push({ name: jobName, status: "failed", message: clickResult?.error || "齿轮菜单点击失败" });
@@ -252,7 +252,7 @@ async function playJobsFromPipelineByDom(tabId, pipelineUrl, jobNames) {
     const playResult = await sendToTab(tabId, {
       type: "playManualJob",
       jobName
-    });
+    }, `点击 job 页面执行按钮 ${jobName}`);
 
     if (!playResult?.ok) {
       result.push({ name: jobName, status: "failed", message: playResult?.error || "DOM 点击执行失败" });
@@ -271,7 +271,7 @@ async function gitlabApi(tabId, method, path) {
     type: "gitlabApi",
     method,
     path
-  });
+  }, `${method} ${path}`);
 
   if (!response?.ok) {
     throw new Error(response?.error || `${method} ${path} 失败`);
@@ -464,26 +464,35 @@ async function pauseForVisualStep(message) {
   await delay(2000);
 }
 
-async function sendToTab(tabId, message) {
+async function sendToTab(tabId, message, label = message?.type || "page action") {
   const startedAt = Date.now();
   let lastError = null;
 
   while (Date.now() - startedAt < 15000) {
     try {
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab.url?.startsWith(GITLAB_ORIGIN)) {
+        throw new Error(`当前标签页不是 GitLab 页面：${tab.url || ""}`);
+      }
+
       const [injection] = await chrome.scripting.executeScript({
         target: { tabId },
         func: runPageAction,
         args: [message]
       });
 
-      return injection?.result;
+      const result = injection?.result;
+      if (!result) {
+        throw new Error("页面动作没有返回结果");
+      }
+      return result;
     } catch (error) {
       lastError = error;
       await delay(500);
     }
   }
 
-  throw new Error(lastError?.message || "content script 未响应");
+  throw new Error(`${label} 失败：${lastError?.message || "页面脚本未响应"}`);
 }
 
 async function runPageAction(message) {
@@ -530,13 +539,7 @@ async function runPageAction(message) {
     markTarget(button);
     await delay(300);
     clickElement(button);
-
-    // Return quickly. GitLab may reload the page after this click, which would
-    // destroy this injected execution context. The background worker verifies
-    // the merge by polling the MR API.
-    setTimeout(() => {
-      clickConfirmIfPresent().catch(() => {});
-    }, 300);
+    await clickConfirmIfPresent();
 
     return { ok: true, merged: false, clicked: true, sourceBranch };
   }
