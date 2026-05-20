@@ -19,7 +19,7 @@
 
 - popup 解析 MR 链接。
 - background 串行打开 MR 页面。
-- content script 点击 GitLab 页面上的合并按钮。
+- background 通过 `chrome.scripting.executeScript` 在当前 GitLab 页面直接执行 DOM 操作。
 - 合并后通过当前登录态 API 只做查询：
   - 读取 MR 的 `merge_commit_sha`
   - 用 `merge_commit_sha` 查 master pipeline
