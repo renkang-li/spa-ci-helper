@@ -124,7 +124,7 @@ button.danger {
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -200,6 +200,31 @@ button.danger {
 .badge.running {
   background: #fff8c5;
   color: var(--amber);
+}
+
+.task-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.task-url {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.mini {
+  min-height: 24px;
+  border-color: var(--line);
+  padding: 0 8px;
+  background: #ffffff;
+  color: var(--text);
+  font-size: 12px;
 }
 
 .message {

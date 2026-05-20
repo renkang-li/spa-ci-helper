@@ -19,5 +19,5 @@
     }
   ],
   "host_permissions": ["https://git.papamk.com/*"],
-  "permissions": ["storage", "tabs"]
+  "permissions": ["storage", "tabs", "windows"]
 }

@@ -10,6 +10,8 @@ const els = {
   releaseMinor: document.querySelector("#releaseMinor"),
   releasePatch: document.querySelector("#releasePatch"),
   closeSuccessTabs: document.querySelector("#closeSuccessTabs"),
+  visibleExecution: document.querySelector("#visibleExecution"),
+  slowMode: document.querySelector("#slowMode"),
   runState: document.querySelector("#runState"),
   summary: document.querySelector("#summary"),
   taskList: document.querySelector("#taskList"),
@@ -97,8 +99,29 @@ function render(state = {}) {
     message.className = "message";
     message.textContent = task.message || "";
 
+    const meta = document.createElement("div");
+    meta.className = "task-meta";
+
+    const url = document.createElement("span");
+    url.className = "task-url";
+    url.title = task.currentUrl || task.url;
+    url.textContent = task.tabId ? `tab #${task.tabId} ${task.currentUrl || task.url}` : "";
+
+    meta.append(url);
+
+    if (task.tabId && !task.tabClosed) {
+      const focusButton = document.createElement("button");
+      focusButton.className = "mini";
+      focusButton.type = "button";
+      focusButton.dataset.action = "focus-tab";
+      focusButton.dataset.tabId = String(task.tabId);
+      focusButton.textContent = "查看";
+      meta.append(focusButton);
+    }
+
     title.append(project, badge);
     li.append(title, message);
+    if (task.tabId || task.currentUrl) li.append(meta);
     els.taskList.append(li);
   }
 
@@ -153,7 +176,9 @@ els.startBtn.addEventListener("click", async () => {
     tasks,
     options: {
       jobs,
-      closeSuccessTabs: els.closeSuccessTabs.checked
+      closeSuccessTabs: els.closeSuccessTabs.checked,
+      visibleExecution: els.visibleExecution.checked,
+      slowMode: els.slowMode.checked
     }
   });
 
@@ -180,6 +205,16 @@ els.clearBtn.addEventListener("click", async () => {
   await send({ type: "clear" });
   logs = [];
   render({ tasks, running: false });
+});
+
+els.taskList.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action='focus-tab']");
+  if (!button) return;
+
+  await send({
+    type: "focusTab",
+    tabId: Number(button.dataset.tabId)
+  });
 });
 
 chrome.runtime.onMessage.addListener((message) => {

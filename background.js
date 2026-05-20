@@ -10,7 +10,9 @@ let state = {
   tasks: [],
   options: {
     jobs: ["release-minor", "release-patch"],
-    closeSuccessTabs: true
+    closeSuccessTabs: true,
+    visibleExecution: true,
+    slowMode: true
   }
 };
 
@@ -32,12 +34,17 @@ async function handleMessage(message) {
         tasks: (message.tasks || []).map((task) => ({ ...task, status: "pending", message: "等待执行" })),
         options: {
           jobs: message.options?.jobs?.length ? message.options.jobs : ["release-minor", "release-patch"],
-          closeSuccessTabs: message.options?.closeSuccessTabs !== false
+          closeSuccessTabs: message.options?.closeSuccessTabs !== false,
+          visibleExecution: message.options?.visibleExecution !== false,
+          slowMode: message.options?.slowMode === true
         }
       };
-      log(`收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}`);
+      log(`收到开始请求，共 ${state.tasks.length} 个 MR，jobs: ${state.options.jobs.join(", ")}，可视化：${state.options.visibleExecution ? "开" : "关"}，慢速：${state.options.slowMode ? "开" : "关"}`);
       notify();
       processQueue();
+      return snapshot();
+    case "focusTab":
+      await focusTab(message.tabId);
       return snapshot();
     case "stop":
       state.stopRequested = true;
@@ -90,10 +97,19 @@ async function processTask(task) {
   log(`打开 MR：${task.projectPath}!${task.mrIid}`);
   updateTask(task.id, { status: "opening_mr", message: "打开 MR 页面" });
   const tab = await createTab(task.url);
+  await focusWindowIfVisible(tab.windowId);
+  updateTask(task.id, {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    currentUrl: task.url,
+    tabClosed: false
+  });
   log(`已创建标签页 #${tab.id}`);
 
   try {
-    await waitForTabComplete(tab.id);
+    const loadedTab = await waitForTabComplete(tab.id);
+    setTaskLocation(task.id, loadedTab);
+    await pauseForVisualStep(`MR 页面已打开：${task.projectPath}!${task.mrIid}`);
 
     log(`页面加载完成，准备合并：${task.projectPath}!${task.mrIid}`);
     updateTask(task.id, { status: "merging", message: "等待合并按钮并点击" });
@@ -106,6 +122,7 @@ async function processTask(task) {
     if (!mergeResult?.ok) {
       throw new Error(mergeResult?.error || "合并点击失败");
     }
+    await pauseForVisualStep(`合并点击完成：${task.projectPath}!${task.mrIid}`);
 
     log(`MR 合并动作完成，读取 merge_commit_sha：${task.projectPath}!${task.mrIid}`);
     updateTask(task.id, { status: "reading_mr", message: "API 查询 merge_commit_sha" });
@@ -139,6 +156,10 @@ async function processTask(task) {
 
     if (state.options.closeSuccessTabs) {
       await chrome.tabs.remove(tab.id).catch(() => {});
+      updateTask(task.id, {
+        tabClosed: true,
+        currentUrl: ""
+      });
       log(`已关闭成功标签页 #${tab.id}`);
     }
   } catch (error) {
@@ -220,7 +241,12 @@ async function playJobsByDom(tabId, jobs) {
     }
 
     log(`打开 job 页面：${job.name}`);
-    await navigateTab(tabId, job.href);
+    const navigatedTab = await navigateTab(tabId, job.href);
+    const task = state.tasks.find((item) => item.tabId === tabId);
+    if (task) {
+      setTaskLocation(task.id, navigatedTab);
+      await pauseForVisualStep(`job 页面已打开：${job.name}`);
+    }
 
     const playResult = await sendToTab(tabId, {
       type: "playManualJob",
@@ -232,6 +258,7 @@ async function playJobsByDom(tabId, jobs) {
       continue;
     }
 
+    await pauseForVisualStep(`job 执行点击完成：${job.name}`);
     result.push({ name: job.name, status: playResult.status || "played" });
   }
 
@@ -259,6 +286,16 @@ function updateTask(id, patch) {
   notify();
 }
 
+function setTaskLocation(id, tab) {
+  if (!tab) return;
+  updateTask(id, {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    currentUrl: tab.url || "",
+    tabClosed: false
+  });
+}
+
 function notify() {
   chrome.runtime.sendMessage({ type: "stateUpdated", state: snapshot() }).catch(() => {});
 }
@@ -278,7 +315,12 @@ function snapshot() {
 }
 
 function createTab(url) {
-  return chrome.tabs.create({ url, active: true });
+  return chrome.tabs.create({ url, active: state.options.visibleExecution });
+}
+
+async function focusWindowIfVisible(windowId) {
+  if (!state.options.visibleExecution || !windowId) return;
+  await chrome.windows.update(windowId, { focused: true }).catch(() => {});
 }
 
 function navigateTab(tabId, url) {
@@ -293,12 +335,19 @@ function navigateTab(tabId, url) {
       if (changeInfo.status === "complete") {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
+        chrome.tabs.get(tabId, (tab) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          focusWindowIfVisible(tab.windowId).catch(() => {});
+          resolve(tab);
+        });
       }
     }
 
     chrome.tabs.onUpdated.addListener(listener);
-    chrome.tabs.update(tabId, { url, active: true }, () => {
+    chrome.tabs.update(tabId, { url, active: state.options.visibleExecution }, () => {
       if (chrome.runtime.lastError) {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(listener);
@@ -320,7 +369,13 @@ function waitForTabComplete(tabId) {
       if (changeInfo.status === "complete") {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(listener);
-        resolve();
+        chrome.tabs.get(tabId, (tab) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(tab);
+        });
       }
     }
 
@@ -334,13 +389,30 @@ function waitForTabComplete(tabId) {
 
       if (tab.status === "complete") {
         clearTimeout(timer);
-        resolve();
+        resolve(tab);
         return;
       }
 
       chrome.tabs.onUpdated.addListener(listener);
     });
   });
+}
+
+async function focusTab(tabId) {
+  if (!Number.isInteger(tabId)) return;
+
+  const tab = await chrome.tabs.get(tabId);
+  await chrome.tabs.update(tabId, { active: true });
+  if (tab.windowId) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+  }
+  log(`已切换到标签页 #${tabId}`);
+}
+
+async function pauseForVisualStep(message) {
+  if (!state.options.slowMode) return;
+  log(`${message}，暂停 2 秒`);
+  await delay(2000);
 }
 
 async function sendToTab(tabId, message) {
