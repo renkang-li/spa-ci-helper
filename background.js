@@ -1,4 +1,7 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
+const POLL_INTERVAL_MS = 3000;
+const MERGE_TIMEOUT_MS = 120000;
+const PIPELINE_TIMEOUT_MS = 180000;
 
 let state = {
   running: false,
@@ -104,35 +107,30 @@ async function processTask(task) {
       throw new Error(mergeResult?.error || "合并点击失败");
     }
 
-    const sourceBranch = mergeResult.sourceBranch || "";
-    const pipelineUrl = `${GITLAB_ORIGIN}/${task.projectPath}/-/pipelines?page=1&scope=all&ref=master`;
+    log(`MR 合并动作完成，读取 merge_commit_sha：${task.projectPath}!${task.mrIid}`);
+    updateTask(task.id, { status: "reading_mr", message: "API 查询 merge_commit_sha" });
+    const mr = await waitForMergeCommit(tab.id, task);
 
-    log(`MR 合并动作完成，打开 master pipelines：${task.projectPath}!${task.mrIid}`);
+    log(`拿到 merge_commit_sha：${shortSha(mr.merge_commit_sha)}`);
     updateTask(task.id, {
-      sourceBranch,
+      sourceBranch: mr.source_branch || mergeResult.sourceBranch || "",
+      mergeCommitSha: mr.merge_commit_sha,
       status: "finding_pipeline",
-      message: sourceBranch ? `DOM 查找 merge pipeline：${sourceBranch}` : "DOM 查找最新 merge pipeline"
+      message: `API 查询 master pipeline：${shortSha(mr.merge_commit_sha)}`
     });
 
-    await navigateTab(tab.id, pipelineUrl);
+    const pipeline = await waitForPipeline(tab.id, task.projectPath, mr.merge_commit_sha);
+    log(`找到 pipeline #${pipeline.id}：${task.projectPath}!${task.mrIid}`);
 
-    const releaseJobs = await sendToTab(tab.id, {
-      type: "findReleaseJobsInPipeline",
-      jobs: state.options.jobs,
-      sourceBranch
-    });
-
-    if (!releaseJobs?.ok) {
-      throw new Error(releaseJobs?.error || "未找到 release job");
-    }
-
-    log(`找到 release job：${formatJobResult(releaseJobs.jobs)}`);
+    const releaseJobs = await queryReleaseJobs(tab.id, task.projectPath, pipeline.id, state.options.jobs);
+    log(`API 找到 release job：${formatJobResult(releaseJobs)}`);
     updateTask(task.id, {
+      pipelineId: pipeline.id,
       status: "triggering_jobs",
-      message: "进入 job 页面执行手动发布"
+      message: `打开 job 页面，DOM 点击执行`
     });
 
-    const jobResult = await playJobsByDom(tab.id, releaseJobs.jobs);
+    const jobResult = await playJobsByDom(tab.id, releaseJobs);
     log(`发布 job 结果：${formatJobResult(jobResult)}`);
     updateTask(task.id, {
       status: "done",
@@ -150,6 +148,61 @@ async function processTask(task) {
       message: error.message || "执行失败"
     });
   }
+}
+
+async function waitForMergeCommit(tabId, task) {
+  const start = Date.now();
+
+  while (Date.now() - start < MERGE_TIMEOUT_MS) {
+    const response = await gitlabApi(tabId, "GET", `/api/v4/projects/${encodeProject(task.projectPath)}/merge_requests/${task.mrIid}`);
+    if (response?.state === "merged" && response.merge_commit_sha) {
+      return response;
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+
+  throw new Error("合并后超时未拿到 merge_commit_sha");
+}
+
+async function waitForPipeline(tabId, projectPath, mergeCommitSha) {
+  const start = Date.now();
+  const query = new URLSearchParams({
+    ref: "master",
+    sha: mergeCommitSha
+  });
+
+  while (Date.now() - start < PIPELINE_TIMEOUT_MS) {
+    const pipelines = await gitlabApi(tabId, "GET", `/api/v4/projects/${encodeProject(projectPath)}/pipelines?${query}`);
+    if (Array.isArray(pipelines) && pipelines.length > 0) {
+      return pipelines[0];
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+
+  throw new Error(`超时未找到 sha=${shortSha(mergeCommitSha)} 的 master pipeline`);
+}
+
+async function queryReleaseJobs(tabId, projectPath, pipelineId, expectedNames) {
+  const jobs = await gitlabApi(
+    tabId,
+    "GET",
+    `/api/v4/projects/${encodeProject(projectPath)}/pipelines/${pipelineId}/jobs?per_page=100&include_retried=true`
+  );
+
+  if (!Array.isArray(jobs)) {
+    throw new Error("API 读取 pipeline jobs 失败");
+  }
+
+  return expectedNames.map((name) => {
+    const job = jobs.find((item) => item.name === name);
+    if (!job) return { name, status: "missing", href: "" };
+
+    return {
+      name,
+      status: job.status,
+      href: job.web_url || `${GITLAB_ORIGIN}/${projectPath}/-/jobs/${job.id}`
+    };
+  });
 }
 
 async function playJobsByDom(tabId, jobs) {
@@ -183,6 +236,20 @@ async function playJobsByDom(tabId, jobs) {
   }
 
   return result;
+}
+
+async function gitlabApi(tabId, method, path) {
+  const response = await sendToTab(tabId, {
+    type: "gitlabApi",
+    method,
+    path
+  });
+
+  if (!response?.ok) {
+    throw new Error(response?.error || `${method} ${path} 失败`);
+  }
+
+  return response.data;
 }
 
 function updateTask(id, patch) {
@@ -294,6 +361,14 @@ async function sendToTab(tabId, message) {
 
 function formatJobResult(result) {
   return result.map((item) => `${item.name}: ${item.status}${item.message ? `(${item.message})` : ""}`).join("；");
+}
+
+function encodeProject(projectPath) {
+  return encodeURIComponent(projectPath);
+}
+
+function shortSha(sha) {
+  return String(sha || "").slice(0, 8);
 }
 
 function delay(ms) {

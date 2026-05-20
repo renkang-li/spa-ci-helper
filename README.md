@@ -1,6 +1,6 @@
 # SPA CI Helper
 
-一个基于当前浏览器 GitLab 登录态的 Chrome 插件，用来批量打开 GitLab 页面、合并 MR，并在合并后进入 master pipeline 页面触发 `release-minor` / `release-patch` 手动发布 job。
+一个基于当前浏览器 GitLab 登录态的 Chrome 插件，用来批量打开 GitLab 页面、合并 MR，并在合并后触发 `release-minor` / `release-patch` 手动发布 job。
 
 ## 使用方式
 
@@ -19,12 +19,13 @@
 - popup 解析 MR 链接。
 - background 串行打开 MR 页面。
 - content script 点击 GitLab 页面上的合并按钮。
-- 合并后打开项目的 master pipelines 页面。
-- content script 在页面 DOM 中找到最新 merge pipeline 行。
-- 点击该行里的手动 job 齿轮，读取 `release-minor` / `release-patch` 的 job 链接。
-- 进入 job 页面，点击页面上的执行按钮。
+- 合并后通过当前登录态 API 只做查询：
+  - 读取 MR 的 `merge_commit_sha`
+  - 用 `merge_commit_sha` 查 master pipeline
+  - 读取 pipeline jobs 和 job 页面链接
+- 进入 job 页面，通过 DOM 点击页面上的执行按钮。
 
-整个主流程走 DOM 点击，不依赖 GitLab API。
+有副作用的动作走 DOM 点击；API 只用于查询和精确定位。
 
 ## 注意
 
