@@ -7,12 +7,14 @@ const els = {
   startBtn: document.querySelector("#startBtn"),
   stopBtn: document.querySelector("#stopBtn"),
   clearBtn: document.querySelector("#clearBtn"),
+  reloadBtn: document.querySelector("#reloadBtn"),
   releaseMinor: document.querySelector("#releaseMinor"),
   releasePatch: document.querySelector("#releasePatch"),
   closeSuccessTabs: document.querySelector("#closeSuccessTabs"),
   visibleExecution: document.querySelector("#visibleExecution"),
   slowMode: document.querySelector("#slowMode"),
   version: document.querySelector("#version"),
+  buildInfo: document.querySelector("#buildInfo"),
   runState: document.querySelector("#runState"),
   summary: document.querySelector("#summary"),
   taskList: document.querySelector("#taskList"),
@@ -23,6 +25,17 @@ let tasks = [];
 let logs = [];
 
 els.version.textContent = `v${chrome.runtime.getManifest().version}`;
+
+async function refreshBuildInfo() {
+  try {
+    const info = await send({ type: "getBuildInfo" });
+    els.buildInfo.textContent = info?.ok
+      ? `backend: v${info.version} ${info.buildId}`
+      : "backend: unavailable";
+  } catch (error) {
+    els.buildInfo.textContent = `backend: ${error.message}`;
+  }
+}
 
 function parseMergeRequests(text) {
   const pattern = /https:\/\/git\.papamk\.com\/(.+?)\/-\/merge_requests\/(\d+)/g;
@@ -210,6 +223,10 @@ els.clearBtn.addEventListener("click", async () => {
   render({ tasks, running: false });
 });
 
+els.reloadBtn.addEventListener("click", () => {
+  chrome.runtime.reload();
+});
+
 els.taskList.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action='focus-tab']");
   if (!button) return;
@@ -234,5 +251,6 @@ chrome.storage.local.get(["draftText"], async ({ draftText }) => {
     tasks = parseMergeRequests(draftText);
   }
   await refreshState();
+  await refreshBuildInfo();
   if (!tasks.length) render({ tasks, running: false });
 });

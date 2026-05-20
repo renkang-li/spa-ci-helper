@@ -59,6 +59,12 @@ h1 {
   text-align: center;
 }
 
+.build-info {
+  margin: -6px 0 10px;
+  color: var(--muted);
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .section {
   border: 1px solid var(--line);
   border-radius: 8px;

@@ -63,6 +63,12 @@ async function handleMessage(message) {
       return snapshot();
     case "getState":
       return snapshot();
+    case "getBuildInfo":
+      return {
+        ok: true,
+        version: chrome.runtime.getManifest().version,
+        buildId: BUILD_ID
+      };
     default:
       return { ok: false, error: "Unknown message type" };
   }
