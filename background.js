@@ -139,15 +139,33 @@ async function processTask(task) {
     const pipeline = await waitForPipeline(tab.id, task.projectPath, mr.merge_commit_sha);
     log(`找到 pipeline #${pipeline.id}：${task.projectPath}!${task.mrIid}`);
 
-    const releaseJobs = await queryReleaseJobs(tab.id, task.projectPath, pipeline.id, state.options.jobs);
-    log(`API 找到 release job：${formatJobResult(releaseJobs)}`);
+    const pipelineUrl = pipeline.web_url || `${GITLAB_ORIGIN}/${task.projectPath}/-/pipelines/${pipeline.id}`;
     updateTask(task.id, {
       pipelineId: pipeline.id,
-      status: "triggering_jobs",
-      message: `打开 job 页面，DOM 点击执行`
+      status: "opening_pipeline",
+      message: "打开 pipeline 页面，准备点击齿轮"
     });
 
-    const jobResult = await playJobsByDom(tab.id, releaseJobs);
+    const pipelineTab = await navigateTab(tab.id, pipelineUrl);
+    setTaskLocation(task.id, pipelineTab);
+    await pauseForVisualStep(`pipeline 页面已打开：#${pipeline.id}`);
+
+    const releaseJobsResult = await sendToTab(tab.id, {
+      type: "findReleaseJobsInPipeline",
+      jobs: state.options.jobs
+    });
+
+    if (!releaseJobsResult?.ok) {
+      throw new Error(releaseJobsResult?.error || "齿轮菜单里未找到 release job");
+    }
+
+    log(`齿轮菜单找到 release job：${formatJobResult(releaseJobsResult.jobs)}`);
+    updateTask(task.id, {
+      status: "triggering_jobs",
+      message: "从齿轮菜单进入 job 页面，DOM 点击执行"
+    });
+
+    const jobResult = await playJobsByDom(tab.id, releaseJobsResult.jobs);
     log(`发布 job 结果：${formatJobResult(jobResult)}`);
     updateTask(task.id, {
       status: "done",
@@ -203,29 +221,6 @@ async function waitForPipeline(tabId, projectPath, mergeCommitSha) {
   throw new Error(`超时未找到 sha=${shortSha(mergeCommitSha)} 的 master pipeline`);
 }
 
-async function queryReleaseJobs(tabId, projectPath, pipelineId, expectedNames) {
-  const jobs = await gitlabApi(
-    tabId,
-    "GET",
-    `/api/v4/projects/${encodeProject(projectPath)}/pipelines/${pipelineId}/jobs?per_page=100&include_retried=true`
-  );
-
-  if (!Array.isArray(jobs)) {
-    throw new Error("API 读取 pipeline jobs 失败");
-  }
-
-  return expectedNames.map((name) => {
-    const job = jobs.find((item) => item.name === name);
-    if (!job) return { name, status: "missing", href: "" };
-
-    return {
-      name,
-      status: job.status,
-      href: job.web_url || `${GITLAB_ORIGIN}/${projectPath}/-/jobs/${job.id}`
-    };
-  });
-}
-
 async function playJobsByDom(tabId, jobs) {
   const result = [];
 
@@ -235,7 +230,7 @@ async function playJobsByDom(tabId, jobs) {
       continue;
     }
 
-    if (job.status && job.status !== "manual") {
+    if (["success", "running", "pending"].includes(job.status)) {
       result.push({ name: job.name, status: job.status });
       continue;
     }
@@ -266,10 +261,6 @@ async function playJobsByDom(tabId, jobs) {
 }
 
 async function gitlabApi(tabId, method, path) {
-  if (method !== "GET") {
-    throw new Error(`插件 API 查询层只允许 GET，已拦截 ${method} ${path}`);
-  }
-
   const response = await sendToTab(tabId, {
     type: "gitlabApi",
     method,

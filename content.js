@@ -13,6 +13,8 @@ async function handleMessage(message) {
       return mergeMr();
     case "gitlabApi":
       return gitlabApi(message.method, message.path);
+    case "findReleaseJobsInPipeline":
+      return findReleaseJobsInPipeline(message.jobs || []);
     case "playManualJob":
       return playManualJob(message.jobName || "");
     default:
@@ -58,10 +60,6 @@ async function mergeMr() {
 }
 
 async function gitlabApi(method, path) {
-  if (method !== "GET") {
-    return { ok: false, error: `插件 API 查询层只允许 GET，已拦截 ${method} ${path}` };
-  }
-
   const headers = {
     "Accept": "application/json",
     "X-Requested-With": "XMLHttpRequest"
@@ -90,6 +88,65 @@ async function gitlabApi(method, path) {
   }
 
   return { ok: true, status: response.status, data };
+}
+
+async function findReleaseJobsInPipeline(expectedJobs) {
+  await waitForPageIdle();
+
+  const found = [];
+  const gears = await waitForValue(() => {
+    const nodes = document.querySelectorAll(
+      '[data-testid="status_manual_borderless-icon"], [data-testid*="manual"][data-testid*="icon"], .ci-status-icon-manual'
+    );
+    const items = clickableElements(nodes);
+    return items.length ? items : null;
+  }, DEFAULT_TIMEOUT_MS);
+
+  if (!gears?.length) {
+    return { ok: false, error: "pipeline 页面未找到手动 job 齿轮" };
+  }
+
+  for (const gear of gears) {
+    gear.scrollIntoView({ block: "center", inline: "center" });
+    await delay(500);
+    gear.click();
+
+    const menu = await waitForElement(
+      '[data-testid="mini-pipeline-graph-dropdown-menu-list"], .js-builds-dropdown-list, .gl-dropdown-contents, [role="menu"]',
+      10000
+    );
+
+    if (!menu) continue;
+
+    await delay(1200);
+
+    for (const name of expectedJobs) {
+      if (found.some((job) => job.name === name)) continue;
+
+      const item = findJobItem(menu, name);
+      if (!item) continue;
+
+      found.push({
+        name,
+        href: absoluteUrl(item.getAttribute("href") || ""),
+        status: getJobStatus(item)
+      });
+    }
+
+    if (found.length === expectedJobs.length) break;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await delay(300);
+  }
+
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+  for (const name of expectedJobs) {
+    if (!found.some((job) => job.name === name)) {
+      found.push({ name, status: "missing", href: "" });
+    }
+  }
+
+  return { ok: true, jobs: found };
 }
 
 async function playManualJob(jobName) {
@@ -192,6 +249,44 @@ function findButtonByText(pattern) {
   return [...document.querySelectorAll("button, a[role='button']")].find((element) => {
     return !element.disabled && isVisible(element) && pattern.test(element.textContent || "");
   });
+}
+
+function clickableElements(nodes) {
+  const seen = new Set();
+  const result = [];
+
+  for (const node of nodes) {
+    const clickable = node.closest("button, a, [role='button']") || node;
+    if (!seen.has(clickable) && isVisible(clickable)) {
+      seen.add(clickable);
+      result.push(clickable);
+    }
+  }
+
+  return result;
+}
+
+function findJobItem(menu, jobName) {
+  const links = [...menu.querySelectorAll('a[data-testid="job-with-link"], a[href*="/-/jobs/"], a[href*="/jobs/"]')];
+  return links.find((link) => normalizeText(link).includes(jobName)) || null;
+}
+
+function getJobStatus(item) {
+  const text = `${item.getAttribute("title") || ""} ${normalizeText(item)}`;
+  if (/已通过|success|passed/i.test(text)) return "success";
+  if (/手动|manual/i.test(text)) return "manual";
+  if (/running|运行中/i.test(text)) return "running";
+  if (/pending|等待/i.test(text)) return "pending";
+  return "unknown";
+}
+
+function absoluteUrl(href) {
+  if (!href) return "";
+  return new URL(href, window.location.origin).href;
+}
+
+function normalizeText(element) {
+  return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
 }
 
 async function waitForElement(selectors, timeoutMs) {

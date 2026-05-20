@@ -23,8 +23,9 @@
 - 合并后通过当前登录态 API 只做查询：
   - 读取 MR 的 `merge_commit_sha`
   - 用 `merge_commit_sha` 查 master pipeline
-  - 读取 pipeline jobs 和 job 页面链接
-- 进入 job 页面，通过 DOM 点击页面上的执行按钮。
+  - 拿到 pipeline 页面链接
+- 打开 pipeline 页面，通过 DOM 点击手动 job 齿轮。
+- 从齿轮菜单里找到 release job，进入 job 页面，通过 DOM 点击页面上的执行按钮。
 
 有副作用的动作走 DOM 点击；API 只用于查询和精确定位。
 
