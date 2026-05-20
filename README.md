@@ -25,7 +25,7 @@
   - 用 `merge_commit_sha` 查 master pipeline
   - 拿到 pipeline 页面链接
 - 打开 pipeline 页面，通过 DOM 点击手动 job 齿轮。
-- 从齿轮菜单里找到 release job，进入 job 页面，通过 DOM 点击页面上的执行按钮。
+- 从齿轮菜单里直接点击 `release-minor` / `release-patch`，进入 job 页面后再通过 DOM 点击页面上的执行按钮。
 
 有副作用的动作走 DOM 点击；API 只用于查询和精确定位。
 

@@ -150,22 +150,12 @@ async function processTask(task) {
     setTaskLocation(task.id, pipelineTab);
     await pauseForVisualStep(`pipeline 页面已打开：#${pipeline.id}`);
 
-    const releaseJobsResult = await sendToTab(tab.id, {
-      type: "findReleaseJobsInPipeline",
-      jobs: state.options.jobs
-    });
-
-    if (!releaseJobsResult?.ok) {
-      throw new Error(releaseJobsResult?.error || "齿轮菜单里未找到 release job");
-    }
-
-    log(`齿轮菜单找到 release job：${formatJobResult(releaseJobsResult.jobs)}`);
     updateTask(task.id, {
       status: "triggering_jobs",
-      message: "从齿轮菜单进入 job 页面，DOM 点击执行"
+      message: "点击齿轮菜单里的 release job，并在 job 页面执行"
     });
 
-    const jobResult = await playJobsByDom(tab.id, releaseJobsResult.jobs);
+    const jobResult = await playJobsFromPipelineByDom(tab.id, pipelineUrl, state.options.jobs);
     log(`发布 job 结果：${formatJobResult(jobResult)}`);
     updateTask(task.id, {
       status: "done",
@@ -221,40 +211,52 @@ async function waitForPipeline(tabId, projectPath, mergeCommitSha) {
   throw new Error(`超时未找到 sha=${shortSha(mergeCommitSha)} 的 master pipeline`);
 }
 
-async function playJobsByDom(tabId, jobs) {
+async function playJobsFromPipelineByDom(tabId, pipelineUrl, jobNames) {
   const result = [];
 
-  for (const job of jobs) {
-    if (!job.href) {
-      result.push({ name: job.name, status: job.status || "missing" });
-      continue;
-    }
-
-    if (["success", "running", "pending"].includes(job.status)) {
-      result.push({ name: job.name, status: job.status });
-      continue;
-    }
-
-    log(`打开 job 页面：${job.name}`);
-    const navigatedTab = await navigateTab(tabId, job.href);
+  for (const jobName of jobNames) {
+    log(`回到 pipeline 页面，准备点击齿轮菜单：${jobName}`);
+    const pipelineTab = await navigateTab(tabId, pipelineUrl);
     const task = state.tasks.find((item) => item.tabId === tabId);
     if (task) {
-      setTaskLocation(task.id, navigatedTab);
-      await pauseForVisualStep(`job 页面已打开：${job.name}`);
+      setTaskLocation(task.id, pipelineTab);
+      await pauseForVisualStep(`pipeline 页面已打开，准备点 ${jobName}`);
+    }
+
+    const clickResult = await sendToTab(tabId, {
+      type: "clickReleaseJobInPipeline",
+      jobName
+    });
+
+    if (!clickResult?.ok) {
+      result.push({ name: jobName, status: "failed", message: clickResult?.error || "齿轮菜单点击失败" });
+      continue;
+    }
+
+    if (!clickResult.clicked) {
+      result.push({ name: jobName, status: clickResult.status || "missing" });
+      continue;
+    }
+
+    log(`已点击齿轮菜单里的 ${jobName}`);
+    const jobTab = await waitForTabUrl(tabId, (url) => /\/-\/jobs\/\d+/.test(url), 60000);
+    if (task) {
+      setTaskLocation(task.id, jobTab);
+      await pauseForVisualStep(`job 页面已打开：${jobName}`);
     }
 
     const playResult = await sendToTab(tabId, {
       type: "playManualJob",
-      jobName: job.name
+      jobName
     });
 
     if (!playResult?.ok) {
-      result.push({ name: job.name, status: "failed", message: playResult?.error || "DOM 点击执行失败" });
+      result.push({ name: jobName, status: "failed", message: playResult?.error || "DOM 点击执行失败" });
       continue;
     }
 
-    await pauseForVisualStep(`job 执行点击完成：${job.name}`);
-    result.push({ name: job.name, status: playResult.status || "played" });
+    await pauseForVisualStep(`job 执行点击完成：${jobName}`);
+    result.push({ name: jobName, status: playResult.status || "played" });
   }
 
   return result;
@@ -390,6 +392,54 @@ function waitForTabComplete(tabId) {
 
       chrome.tabs.onUpdated.addListener(listener);
     });
+  });
+}
+
+function waitForTabUrl(tabId, predicate, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("等待 job 页面跳转超时"));
+    }, timeoutMs);
+
+    function done(tab) {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(tab);
+    }
+
+    function checkCurrent() {
+      chrome.tabs.get(tabId, (tab) => {
+        if (chrome.runtime.lastError) {
+          clearTimeout(timer);
+          chrome.tabs.onUpdated.removeListener(listener);
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+
+        if (predicate(tab.url || "")) {
+          done(tab);
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          clearTimeout(timer);
+          chrome.tabs.onUpdated.removeListener(listener);
+          reject(new Error("等待 job 页面跳转超时"));
+        }
+      });
+    }
+
+    function listener(updatedTabId, changeInfo, tab) {
+      if (updatedTabId !== tabId) return;
+      if (predicate(changeInfo.url || tab.url || "")) {
+        done(tab);
+      }
+    }
+
+    chrome.tabs.onUpdated.addListener(listener);
+    checkCurrent();
   });
 }
 

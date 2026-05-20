@@ -13,8 +13,8 @@ async function handleMessage(message) {
       return mergeMr();
     case "gitlabApi":
       return gitlabApi(message.method, message.path);
-    case "findReleaseJobsInPipeline":
-      return findReleaseJobsInPipeline(message.jobs || []);
+    case "clickReleaseJobInPipeline":
+      return clickReleaseJobInPipeline(message.jobName || "");
     case "playManualJob":
       return playManualJob(message.jobName || "");
     default:
@@ -90,10 +90,9 @@ async function gitlabApi(method, path) {
   return { ok: true, status: response.status, data };
 }
 
-async function findReleaseJobsInPipeline(expectedJobs) {
+async function clickReleaseJobInPipeline(jobName) {
   await waitForPageIdle();
 
-  const found = [];
   const gears = await waitForValue(() => {
     const nodes = document.querySelectorAll(
       '[data-testid="status_manual_borderless-icon"], [data-testid*="manual"][data-testid*="icon"], .ci-status-icon-manual'
@@ -109,7 +108,7 @@ async function findReleaseJobsInPipeline(expectedJobs) {
   for (const gear of gears) {
     gear.scrollIntoView({ block: "center", inline: "center" });
     await delay(500);
-    gear.click();
+    clickElement(gear);
 
     const menu = await waitForElement(
       '[data-testid="mini-pipeline-graph-dropdown-menu-list"], .js-builds-dropdown-list, .gl-dropdown-contents, [role="menu"]',
@@ -120,33 +119,30 @@ async function findReleaseJobsInPipeline(expectedJobs) {
 
     await delay(1200);
 
-    for (const name of expectedJobs) {
-      if (found.some((job) => job.name === name)) continue;
+    const item = findJobItem(menu, jobName);
+    if (item) {
+      const status = getJobStatus(item);
+      const href = absoluteUrl(item.getAttribute("href") || "");
 
-      const item = findJobItem(menu, name);
-      if (!item) continue;
+      if (["success", "running", "pending"].includes(status)) {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        return { ok: true, name: jobName, status, href, clicked: false };
+      }
 
-      found.push({
-        name,
-        href: absoluteUrl(item.getAttribute("href") || ""),
-        status: getJobStatus(item)
-      });
+      item.scrollIntoView({ block: "center", inline: "center" });
+      item.style.outline = "3px solid #2563eb";
+      item.style.outlineOffset = "2px";
+      await delay(600);
+      setTimeout(() => clickElement(item), 100);
+      return { ok: true, name: jobName, status, href, clicked: true };
     }
 
-    if (found.length === expectedJobs.length) break;
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await delay(300);
   }
 
   document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-
-  for (const name of expectedJobs) {
-    if (!found.some((job) => job.name === name)) {
-      found.push({ name, status: "missing", href: "" });
-    }
-  }
-
-  return { ok: true, jobs: found };
+  return { ok: true, name: jobName, status: "missing", href: "", clicked: false };
 }
 
 async function playManualJob(jobName) {
@@ -249,6 +245,12 @@ function findButtonByText(pattern) {
   return [...document.querySelectorAll("button, a[role='button']")].find((element) => {
     return !element.disabled && isVisible(element) && pattern.test(element.textContent || "");
   });
+}
+
+function clickElement(element) {
+  element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+  element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+  element.click();
 }
 
 function clickableElements(nodes) {
