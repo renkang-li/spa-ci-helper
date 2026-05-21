@@ -1,4 +1,9 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
+const SPECIAL_TEMPLATE_PROJECTS = new Set([
+  "template-cleaner-blog",
+  "template-cleaner-product",
+  "template-single-payment-page"
+]);
 
 const els = {
   sourceText: document.querySelector("#sourceText"),
@@ -74,7 +79,16 @@ function parseProdUploads(text) {
     addProdTask(result, seen, match[1], match[2]);
   }
 
+  for (const match of text.matchAll(/\b(template-[a-z0-9-]+)\s*-\s*(v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/g)) {
+    addProdTask(result, seen, templateProjectPath(match[1]), match[2]);
+  }
+
   return result;
+}
+
+function templateProjectPath(projectName) {
+  if (SPECIAL_TEMPLATE_PROJECTS.has(projectName)) return `lf/minishops/${projectName}`;
+  return `lf/minishops/templates/${projectName.replace(/^template-/, "")}`;
 }
 
 function addProdTask(result, seen, rawProjectPath, tagName) {
@@ -207,9 +221,9 @@ async function refreshState() {
 
 function updateModeView() {
   const prodMode = currentMode() === "prod";
-  els.sourceLabel.textContent = prodMode ? "粘贴 tag 地址" : "粘贴 MR 聊天记录";
+  els.sourceLabel.textContent = prodMode ? "粘贴 tag 地址或飞书模板发布列表" : "粘贴 MR 聊天记录";
   els.sourceText.placeholder = prodMode
-    ? "https://git.papamk.com/lf/minishops/template-single-payment-page/-/tags/v1.74.2-rc.6"
+    ? "https://git.papamk.com/lf/minishops/template-single-payment-page/-/tags/v1.74.2-rc.6\n或：template-align-blog - v1.8.0|template-single-payment-page - v1.75.0"
     : "https://git.papamk.com/lf/minishops/.../-/merge_requests/26";
   els.releaseOptions.hidden = prodMode;
 }
