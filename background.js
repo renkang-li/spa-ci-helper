@@ -1,5 +1,5 @@
 const GITLAB_ORIGIN = "https://git.papamk.com";
-const BUILD_ID = "prod-upload-dom-play";
+const BUILD_ID = "prod-tag-url-dom-play";
 const POLL_INTERVAL_MS = 3000;
 const MERGE_TIMEOUT_MS = 120000;
 const PIPELINE_TIMEOUT_MS = 180000;

@@ -70,28 +70,16 @@ function parseProdUploads(text) {
   const seen = new Set();
   const result = [];
 
-  for (const rawLine of text.split(/\n+/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const urlMatch = line.match(/https:\/\/git\.papamk\.com\/([^\s)]+)/);
-    const tagMatch = line.match(/\b(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/);
-    if (!urlMatch || !tagMatch) continue;
-
-    addProdTask(result, seen, urlMatch[1], tagMatch[1]);
-  }
-
-  if (!result.length) {
-    const urls = [...text.matchAll(/https:\/\/git\.papamk\.com\/([^\s)]+)/g)];
-    const tags = [...text.matchAll(/\b(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/g)];
-    if (urls.length === 1 && tags.length === 1) addProdTask(result, seen, urls[0][1], tags[0][1]);
+  for (const match of text.matchAll(/https:\/\/git\.papamk\.com\/(.+?)\/-\/tags\/([^\s),，。?#]+)/g)) {
+    addProdTask(result, seen, match[1], match[2]);
   }
 
   return result;
 }
 
 function addProdTask(result, seen, rawProjectPath, tagName) {
-  const projectPath = normalizeProjectPath(rawProjectPath);
+  const projectPath = decodeURIComponent(rawProjectPath);
+  tagName = decodeURIComponent(tagName);
   const key = `${projectPath}@${tagName}`;
   if (!projectPath || seen.has(key)) return;
   seen.add(key);
@@ -106,15 +94,6 @@ function addProdTask(result, seen, rawProjectPath, tagName) {
     status: "pending",
     message: "等待执行"
   });
-}
-
-function normalizeProjectPath(value) {
-  return decodeURIComponent(value)
-    .split(/[?#]/)[0]
-    .split("/-/")[0]
-    .replace(/[),，。]+$/g, "")
-    .replace(/\/+$/g, "")
-    .replace(/\.git$/g, "");
 }
 
 function currentMode() {
@@ -228,9 +207,9 @@ async function refreshState() {
 
 function updateModeView() {
   const prodMode = currentMode() === "prod";
-  els.sourceLabel.textContent = prodMode ? "粘贴项目地址和 tag" : "粘贴 MR 聊天记录";
+  els.sourceLabel.textContent = prodMode ? "粘贴 tag 地址" : "粘贴 MR 聊天记录";
   els.sourceText.placeholder = prodMode
-    ? "https://git.papamk.com/lirenkang/test-ci-chrome v1.0.6"
+    ? "https://git.papamk.com/lf/minishops/template-single-payment-page/-/tags/v1.74.2-rc.6"
     : "https://git.papamk.com/lf/minishops/.../-/merge_requests/26";
   els.releaseOptions.hidden = prodMode;
 }
