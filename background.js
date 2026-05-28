@@ -3,6 +3,9 @@ const BUILD_ID = "prod-template-list-dom-play";
 const POLL_INTERVAL_MS = 3000;
 const MERGE_TIMEOUT_MS = 120000;
 const PIPELINE_TIMEOUT_MS = 180000;
+const JOB_WAIT_TIMEOUT_MS = 300000;
+// release job 在前置 stage 跑完前会处于这些「未解锁」状态，需要继续轮询
+const TRANSIENT_JOB_STATUSES = new Set(["created", "pending", "waiting_for_resource", "preparing"]);
 
 let state = {
   running: false,
@@ -261,15 +264,36 @@ async function gitlabGet(tabId, path) {
 }
 
 async function findPipelineJobs(tabId, projectPath, pipelineId, names) {
-  const jobs = await gitlabGet(
-    tabId,
-    `/api/v4/projects/${encodeURIComponent(projectPath)}/pipelines/${pipelineId}/jobs?per_page=100&include_retried=true`
-  );
+  const jobsUrl = `/api/v4/projects/${encodeURIComponent(projectPath)}/pipelines/${pipelineId}/jobs?per_page=100&include_retried=true`;
+  const startedAt = Date.now();
+  let lastJobs = null;
 
-  if (!Array.isArray(jobs)) throw new Error("API 查询 pipeline jobs 失败");
+  while (Date.now() - startedAt < JOB_WAIT_TIMEOUT_MS) {
+    const jobs = await gitlabGet(tabId, jobsUrl);
+    if (!Array.isArray(jobs)) throw new Error("API 查询 pipeline jobs 失败");
+    lastJobs = jobs;
 
+    const resolved = names.map((name) => {
+      const job = jobs.find((item) => item.name === name);
+      return job
+        ? { name, status: job.status, webUrl: job.web_url, id: job.id }
+        : { name, status: "missing", webUrl: "", id: "" };
+    });
+
+    const stillWaiting = resolved.some((job) => TRANSIENT_JOB_STATUSES.has(job.status));
+    if (!stillWaiting) return resolved;
+
+    const waitingNames = resolved
+      .filter((job) => TRANSIENT_JOB_STATUSES.has(job.status))
+      .map((job) => `${job.name}(${job.status})`)
+      .join("、");
+    log(`等待 release job 解锁：${waitingNames}`);
+    await delay(POLL_INTERVAL_MS);
+  }
+
+  log(`等待 release job 解锁超时，使用最后一次状态继续`);
   return names.map((name) => {
-    const job = jobs.find((item) => item.name === name);
+    const job = (lastJobs || []).find((item) => item.name === name);
     return job
       ? { name, status: job.status, webUrl: job.web_url, id: job.id }
       : { name, status: "missing", webUrl: "", id: "" };
