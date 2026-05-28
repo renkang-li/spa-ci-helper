@@ -429,14 +429,47 @@ async function pageAction(action) {
   function scheduleClick(element, confirmAfterClick) {
     setTimeout(() => {
       clickElement(element);
-      if (confirmAfterClick) setTimeout(clickConfirm, 500);
+      if (confirmAfterClick) waitAndClickConfirm();
     }, 100);
   }
 
-  function clickConfirm() {
-    const button = [...document.querySelectorAll(".modal button, [role='dialog'] button, button")]
-      .find((item) => !item.disabled && isVisible(item) && /合并|Merge|确认|Confirm|运行|执行|Play|Run/i.test(textOf(item)));
-    if (button) clickElement(button);
+  function waitAndClickConfirm() {
+    // 只在真的出现的 modal/dialog 里找确认按钮；如果一直没有 modal，就什么都不点。
+    // 这样避免把页面上的「关闭合并请求」之类带「合并」字样的按钮误点掉。
+    const deadline = Date.now() + 2500;
+    const timer = setInterval(() => {
+      const modal = findOpenModal();
+      if (modal) {
+        const button = [...modal.querySelectorAll("button")]
+          .find((item) => !item.disabled && isVisible(item) && isConfirmText(textOf(item)));
+        if (button) {
+          clearInterval(timer);
+          clickElement(button);
+          return;
+        }
+      }
+      if (Date.now() > deadline) clearInterval(timer);
+    }, 150);
+  }
+
+  function findOpenModal() {
+    const candidates = [
+      ".modal.show",
+      ".modal.in",
+      ".gl-modal",
+      "[role='dialog'][aria-modal='true']",
+      "[role='alertdialog']"
+    ];
+    for (const selector of candidates) {
+      const node = [...document.querySelectorAll(selector)].find(isVisible);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function isConfirmText(text) {
+    // 文本必须等于这些短词之一,避免「关闭合并请求」这种子串误命中。
+    return /^(合并|Merge merge request|Merge|确认|确定|Confirm|运行|执行|Play|Run|Run job)$/i.test(text);
   }
 
   function clickElement(element) {
